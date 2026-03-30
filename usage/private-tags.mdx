@@ -1,0 +1,187 @@
+---
+title: "Private tags"
+description: "Prevent sensitive content from being stored in memory by wrapping it in <private> tags."
+---
+
+Use `<private>` tags to mark content you don't want persisted in Claude Mem's observation database. Claude can see and use the content during the current session, but it will never be saved as an observation or stored in any search index.
+
+## How it works
+
+Wrap any content in `<private>` tags:
+
+```text
+<private>
+This content will not be stored in memory.
+</private>
+```
+
+Tags are stripped at the hook layer — during storage, not from the live conversation. Claude sees the full content including the tags throughout the session; the tags only take effect when content is written to the database.
+
+<Info>
+  No configuration required. Private tag stripping is always active.
+</Info>
+
+## Use cases
+
+### Sensitive credentials or connection details
+
+```text
+Please analyze this error:
+
+<private>
+Error: Database connection failed
+Host: internal-db-prod.company.com
+Port: 5432
+User: admin_user
+</private>
+
+What might be causing this?
+```
+
+Claude sees the full error context. Only the question itself gets stored.
+
+### API keys
+
+```text
+<private>
+API_KEY=sk-proj-abc123xyz789
+</private>
+
+Test this API connection for me.
+```
+
+The key is available to Claude during the session but never written to disk.
+
+### Temporary session context
+
+```text
+<private>
+Background for this session only:
+- Project deadline is tomorrow
+- This is a hotfix for production
+- Manager asked for this specifically
+</private>
+
+Help me fix this bug quickly.
+```
+
+### Large debug output
+
+```text
+<private>
+Debug output from previous run:
+[... 500 lines of logs ...]
+</private>
+
+Based on these logs, what's the root cause?
+```
+
+### Exploratory notes
+
+```text
+<private>
+I'm just brainstorming here, not making a final decision.
+</private>
+
+What are some unconventional approaches to solving this?
+```
+
+Personal context helps Claude understand your request without polluting your observation history.
+
+## What gets filtered
+
+Private content is stripped from every storage path:
+
+| Storage path | What happens |
+|---|---|
+| **User prompt storage** | Tags stripped before saving to the `user_prompts` table |
+| **Tool inputs** | Parameters passed to tools are filtered before observation creation |
+| **Tool responses** | Output from tools is filtered before observation creation |
+| **Search indices** | Private content never reaches the database or Chroma embeddings |
+
+## What does not get filtered
+
+- **Session summaries** — generated only from non-private observations
+- **Claude's responses** — not captured by Claude Mem at all
+
+## Tag behavior
+
+| Behavior | Details |
+|---|---|
+| **Multiline** | Tags can wrap multiple lines |
+| **Multiple tags** | You can use several `<private>` sections in one message |
+| **Nested tags** | Inner tags are included in outer tag removal |
+| **Always active** | No configuration or setup needed |
+
+## Architecture: edge processing
+
+The `<private>` tag uses an **edge processing pattern** — content is filtered before it ever reaches the worker service or database:
+
+- **`UserPromptSubmit` hook** — strips tags from user prompts before saving to the `user_prompts` table
+- **`PostToolUse` hook** — strips tags from serialized `tool_input` and `tool_response` JSON before observation creation
+
+This keeps the worker service simple and maintains a clean separation between ephemeral and persistent data. Tags remain visible in the live conversation but are stripped from all persistent storage.
+
+<Note>
+  The implementation strips tags from the serialized JSON representations of tool inputs and responses, not from the original conversation UI text. Your typed prompt is stored separately in the `user_prompts` table, where tags are also stripped before storage.
+</Note>
+
+## Verifying that tags work
+
+Submit a prompt with `<private>` content, then check the database directly:
+
+```bash
+# Check the most recent stored prompt
+sqlite3 ~/.claude-mem/claude-mem.db \
+  "SELECT prompt_text FROM user_prompts ORDER BY created_at_epoch DESC LIMIT 1;"
+
+# Check the most recent observation narrative
+sqlite3 ~/.claude-mem/claude-mem.db \
+  "SELECT narrative FROM observations ORDER BY created_at_epoch DESC LIMIT 1;"
+```
+
+The private content should not appear in either result. The `<private>` tags themselves should also be absent.
+
+## Best practices
+
+1. **Don't over-tag** — Claude's understanding of your project builds from observations. Excessive private tagging reduces the quality of future context.
+2. **Use proper secrets management** — `<private>` prevents storage, but sensitive data like production credentials should still be handled through dedicated secrets tooling.
+3. **Check the log if unsure** — `~/.claude-mem/silent.log` records tag-stripping activity and any errors.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Tags not being stripped">
+    1. Verify correct syntax: `<private>content</private>`
+    2. Check `~/.claude-mem/silent.log` for errors
+    3. Ensure the worker is running: `npm run worker:status`
+    4. Restart the worker: `npm run worker:restart`
+  </Accordion>
+
+  <Accordion title="Partial content stored">
+    If content appears partially in observations:
+
+    - Ensure tags are properly closed with `</private>`
+    - Check for typos in the tag name
+    - Verify the content is inside a tool execution, not only in your prompt text
+  </Accordion>
+
+  <Accordion title="Silent log shows type errors">
+    If you see entries like this in `~/.claude-mem/silent.log`:
+
+    ```text
+    [save-hook] stripMemoryTags received non-string: { type: 'object' }
+    ```
+
+    This is usually harmless — it indicates defensive type checking is working correctly. If you see it frequently, please report it at [github.com/thedotmack/claude-mem/issues](https://github.com/thedotmack/claude-mem/issues).
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Search tools" icon="magnifying-glass" href="/usage/search-tools">
+    Search and retrieve past observations
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    System settings and environment variables
+  </Card>
+</CardGroup>

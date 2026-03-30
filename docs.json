@@ -1,122 +1,116 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Claude Mem",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#f96505",
+    "light": "#b14f15"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/9d1bce49-8bdc-4fc7-8665-193acf6ff460.webp",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/thedotmack/claude-mem"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/thedotmack/claude-mem",
+      "x": "https://x.com/Claude_Memory"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "usage/getting-started",
+              "beta-features"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Using Claude Mem",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "usage/search-tools",
+              "usage/private-tags",
+              "usage/folder-context",
+              "usage/export-import",
+              "usage/claude-desktop",
+              "modes"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "AI Providers",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "usage/gemini-provider",
+              "usage/openrouter-provider"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Best Practices",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "context-engineering",
+              "progressive-disclosure"
+            ]
+          },
+          {
+            "group": "Configuration & Development",
+            "pages": [
+              "configuration",
+              "development",
+              "troubleshooting"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Integrations",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Platform Integrations",
             "pages": [
-              "api-reference/introduction"
+              "openclaw-integration",
+              "platform-integration",
+              "cursor/index",
+              "cursor/gemini-setup",
+              "cursor/openrouter-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "System Design",
+            "pages": [
+              "architecture/overview",
+              "architecture/worker-service",
+              "architecture/database",
+              "architecture/search-architecture"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Hooks & Lifecycle",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "hooks-architecture",
+              "architecture/hooks"
+            ]
+          },
+          {
+            "group": "Evolution",
+            "pages": [
+              "architecture-evolution",
+              "architecture/pm2-to-bun-migration"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

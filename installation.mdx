@@ -1,0 +1,173 @@
+---
+title: "Installation"
+description: "Install the Claude-Mem plugin in two commands and get persistent memory across all sessions"
+---
+
+# Installation
+
+## Quick Install
+
+Claude-Mem installs directly from the Claude Code plugin marketplace. Start a new Claude Code session and run:
+
+<Steps>
+  <Step title="Add the marketplace source">
+    ```bash
+    /plugin marketplace add thedotmack/claude-mem
+    ```
+  </Step>
+  <Step title="Install the plugin">
+    ```bash
+    /plugin install claude-mem
+    ```
+  </Step>
+  <Step title="Restart Claude Code">
+    Restart Claude Code. Context from previous sessions will automatically appear when you start your next session.
+  </Step>
+</Steps>
+
+The plugin installer automatically handles everything:
+
+- Downloads prebuilt binaries (no compilation needed)
+- Installs all dependencies including SQLite binaries
+- Configures hooks for session lifecycle management
+- Auto-starts the worker service on your first session
+
+<Warning>
+Claude-Mem is also published on npm, but running `npm install -g claude-mem` installs the **SDK/library only**. It does **not** register plugin hooks or start the worker service. To use Claude-Mem as a persistent memory plugin, always install via the `/plugin` commands above.
+</Warning>
+
+## System Requirements
+
+| Requirement | Details |
+|---|---|
+| **Node.js** | 18.0.0 or higher |
+| **Claude Code** | Latest version with plugin support |
+| **Bun** | JavaScript runtime and process manager — auto-installed if missing |
+| **uv** | Python package manager for Chroma vector search — auto-installed if missing |
+| **SQLite 3** | For persistent storage — bundled |
+
+<Note>
+On Windows, if you see `npm : The term 'npm' is not recognized`, ensure Node.js is installed and added to your PATH. Download the latest installer from nodejs.org and restart your terminal after installation.
+</Note>
+
+## Advanced Installation (From Source)
+
+For development or testing, you can clone the repository and build from source:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/thedotmack/claude-mem.git
+    cd claude-mem
+    ```
+  </Step>
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+  <Step title="Build hooks and worker service">
+    ```bash
+    npm run build
+    ```
+  </Step>
+  <Step title="Start the worker service">
+    The worker auto-starts on your first Claude Code session. To start it manually:
+    ```bash
+    npm run worker:start
+    ```
+  </Step>
+  <Step title="Verify the worker is running">
+    ```bash
+    npm run worker:status
+    ```
+  </Step>
+</Steps>
+
+## Post-Installation Verification
+
+After installing, run through these checks to confirm everything is working:
+
+<Accordion title="1. Automatic Dependency Installation">
+  Dependencies are installed automatically during plugin installation. The `SessionStart` hook also verifies dependencies are up-to-date on each session start — this check is fast and idempotent. It works cross-platform on Windows, macOS, and Linux.
+</Accordion>
+
+<Accordion title="2. Verify Plugin Hook Registration">
+  Check that hooks are configured in Claude Code:
+
+  ```bash
+  cat plugin/hooks/hooks.json
+  ```
+
+  You should see entries for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`.
+</Accordion>
+
+<Accordion title="3. Confirm Data Directory Location">
+  All Claude-Mem data is stored in `~/.claude-mem/`:
+
+  | File | Purpose |
+  |---|---|
+  | `~/.claude-mem/claude-mem.db` | SQLite database with all sessions and observations |
+  | `~/.claude-mem/.worker.pid` | Worker process ID |
+  | `~/.claude-mem/.worker.port` | Worker port (default: 37777) |
+  | `~/.claude-mem/logs/worker-YYYY-MM-DD.log` | Daily worker logs |
+  | `~/.claude-mem/settings.json` | Plugin configuration (auto-created on first run) |
+
+  To use a custom data directory:
+
+  ```bash
+  export CLAUDE_MEM_DATA_DIR=/custom/path
+  ```
+</Accordion>
+
+<Accordion title="4. Check Worker Logs">
+  ```bash
+  npm run worker:logs
+  ```
+
+  The logs show worker startup, observation processing, and any errors.
+</Accordion>
+
+<Accordion title="5. Test Context Retrieval">
+  ```bash
+  npm run test:context
+  ```
+
+  This verifies that the worker is running and context can be retrieved from the database.
+</Accordion>
+
+## Upgrading
+
+Upgrades are automatic when you update through the plugin marketplace. The worker service restarts automatically after an upgrade.
+
+<Tabs>
+  <Tab title="Marketplace Update">
+    Use the Claude Code plugin update command to upgrade to the latest stable release. The marketplace handles dependency reinstallation and worker restart automatically.
+  </Tab>
+  <Tab title="Version Notes">
+    **v7.1.0**: PM2 replaced with native Bun process management. Migration is automatic on first hook trigger after upgrade.
+
+    **v7.0.0+**: 11 configuration settings and dual-tag privacy system introduced.
+
+    **v5.4.0+**: MCP tools-based search replaces the previous approach, saving ~2,250 tokens per session.
+
+    See the [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for the complete version history.
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
+    Learn how Claude-Mem works automatically — what gets captured, how context injection works, and how to search your history.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Customize observation limits, context injection behavior, AI model selection, worker port, and privacy settings.
+  </Card>
+  <Card title="MCP Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Query your project history with natural language using the 3-layer MCP search workflow.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting">
+    Solutions for common issues including worker startup failures, missing context, and Windows-specific problems.
+  </Card>
+</CardGroup>

@@ -1,0 +1,237 @@
+---
+title: "Context engineering"
+description: "Best practices for curating the optimal set of tokens for AI agents — and how Claude Mem applies these principles."
+---
+
+## Core principle
+
+> **Find the smallest possible set of high-signal tokens that maximize the likelihood of your desired outcome.**
+
+Context engineering is the practice of actively managing what an AI model sees. It is not a one-time task — it is an iterative discipline applied every time you pass information to the model.
+
+## Context engineering vs. prompt engineering
+
+These two practices are related but distinct:
+
+| | Prompt engineering | Context engineering |
+|---|---|---|
+| **What it is** | Writing and organizing LLM instructions for optimal outcomes | Curating and maintaining the optimal token set during inference |
+| **When it happens** | Primarily a one-time authoring task | Iterative — happens every turn |
+| **What it manages** | System instructions and their wording | System instructions, tools, external data, message history, runtime retrieval |
+
+Context engineering manages the full picture of what the model can see:
+
+- System instructions
+- Tools and tool schemas
+- Model Context Protocol (MCP) connections
+- External data and documents
+- Message history
+- Runtime data retrieved on demand
+
+## The problem: context rot
+
+LLMs have a finite **attention budget**, and it degrades as context grows.
+
+- Every token attends to every other token — an n² relationship
+- As context length increases, model accuracy on earlier content decreases
+- Models have less training experience with very long sequences
+- More context is not always better — it has diminishing (and eventually negative) marginal returns
+
+Context must be treated as a finite resource. Once it fills with low-signal content, high-signal information gets crowded out.
+
+## System prompts: finding the right altitude
+
+A well-crafted system prompt lives in a "Goldilocks zone" — specific enough to guide behavior, flexible enough to stay useful across edge cases.
+
+<Columns cols={3}>
+  <Card title="Too prescriptive" icon="x" color="#ef4444">
+    Hardcoded if-else logic. Brittle and fragile. High maintenance burden as the system evolves.
+  </Card>
+  <Card title="Too vague" icon="x" color="#ef4444">
+    High-level guidance without concrete signals. Falsely assumes shared context. Lacks actionable direction.
+  </Card>
+  <Card title="Just right" icon="check" color="#22c55e">
+    Specific enough to guide behavior effectively. Flexible enough to provide strong heuristics. Minimal but sufficient.
+  </Card>
+</Columns>
+
+### Best practices for system prompts
+
+- Use simple, direct language
+- Organize into distinct sections with XML tags or Markdown headers (e.g., `<background_information>`, `<instructions>`, `## Tool guidance`)
+- Start with a minimal prompt and add to it based on observed failure modes
+- Note: "minimal" does not mean "short" — provide sufficient information upfront to prevent failures
+
+## Tools: minimal and clear
+
+Tools add tokens to every request through their schemas and descriptions. Keep them precise.
+
+### Design principles
+
+- **Self-contained**: Each tool has a single, clear purpose
+- **Robust to error**: Handle edge cases gracefully without crashing or producing ambiguous output
+- **Extremely clear**: Intended use is unambiguous from the description alone
+- **Token-efficient**: Returns relevant information without bloat
+- **Descriptive parameters**: Use unambiguous input names (`user_id` not `user`)
+
+<Warning>
+  **The human test**: If a human engineer can't definitively say which tool to use in a given situation, an AI agent can't be expected to do better. Overlap between tools is a signal to consolidate or clarify.
+</Warning>
+
+### Common failure modes to avoid
+
+- Bloated tool sets covering too much functionality in one schema
+- Tools with overlapping purposes that force the model to guess
+- Ambiguous parameter names that introduce uncertainty at call time
+
+## Examples: diverse, not exhaustive
+
+When providing few-shot examples, curate quality over quantity.
+
+<Columns cols={2}>
+  <Card title="Do this" icon="check" color="#22c55e">
+    Curate a small set of diverse, canonical examples that show expected behavior effectively. Think of each example as a picture worth a thousand words.
+  </Card>
+  <Card title="Avoid this" icon="x" color="#ef4444">
+    Stuffing in an exhaustive list of edge cases. Trying to articulate every possible rule. Overwhelming the model with scenarios it won't encounter.
+  </Card>
+</Columns>
+
+## Context retrieval strategies
+
+How you retrieve data into the context window has a large impact on quality and cost.
+
+<AccordionGroup>
+  <Accordion title="Just-in-time context (recommended for agents)" defaultOpen={true}>
+    **Approach**: Maintain lightweight identifiers — file paths, queries, links — and dynamically load full data at runtime only when needed.
+
+    **Benefits**:
+    - Avoids context pollution from irrelevant content
+    - Enables progressive disclosure patterns
+    - Mirrors human cognition (we don't memorize everything ahead of time)
+    - Lets agents discover context incrementally, using metadata like file names and timestamps as signals
+
+    **Trade-offs**:
+    - Slower than pre-computed retrieval
+    - Requires clear tool guidance to prevent dead-ends
+  </Accordion>
+  <Accordion title="Pre-inference retrieval (traditional RAG)">
+    **Approach**: Use embedding-based retrieval to surface relevant context before inference begins.
+
+    **When to use**: Static content that won't change during the interaction, or when the retrieval query is well-defined and the result set is small.
+  </Accordion>
+  <Accordion title="Hybrid strategy (best of both)">
+    **Approach**: Retrieve some data upfront for known requirements, and enable autonomous exploration on demand for unknown requirements.
+
+    **Example**: Claude Code loads `CLAUDE.md` files upfront at session start, then uses glob and grep tools for just-in-time retrieval as work proceeds.
+
+    **Rule of thumb**: "Do the simplest thing that works."
+  </Accordion>
+</AccordionGroup>
+
+## Long-horizon tasks: three techniques
+
+Extended interactions accumulate context. These three techniques help manage it across long-running tasks.
+
+<Steps>
+  <Step title="Compaction">
+    When a conversation is nearing the context limit, pass the message history to the model for compression, then reinitiate with the summary.
+
+    **Implementation**:
+    - Preserve critical details: architectural decisions, bugs, implementation choices
+    - Discard redundant tool outputs and intermediate reasoning
+    - Continue with the compressed context plus recently accessed files
+
+    **Tuning process**: First maximize recall (capture all relevant information), then improve precision (eliminate superfluous content).
+
+    **Low-hanging fruit**: Clear old tool call inputs and outputs — these are often large and rarely need to be re-read.
+
+    **Best for**: Tasks requiring extensive back-and-forth dialogue.
+  </Step>
+  <Step title="Structured note-taking (agentic memory)">
+    Have the agent write notes that are persisted outside the context window and retrieved later as needed.
+
+    **Examples**:
+    - To-do lists for multi-step tasks
+    - `NOTES.md` files for tracking progress
+    - Game state or long-running process logs
+
+    **Benefits**: Persistent memory with minimal token overhead. Maintains critical context across tool calls. Enables multi-hour coherent strategies.
+
+    **Best for**: Iterative development with clear milestones.
+  </Step>
+  <Step title="Sub-agent architectures">
+    Delegate focused tasks to specialized sub-agents that each have a clean, targeted context window.
+
+    **How it works**:
+    - Main agent maintains the high-level plan and coordinates work
+    - Sub-agents perform deep technical work within their own context
+    - Sub-agents can explore extensively (tens of thousands of tokens internally)
+    - Sub-agents return condensed summaries (1,000–2,000 tokens) to the main agent
+
+    **Benefits**: Clear separation of concerns. Parallel exploration. Detailed context stays isolated and doesn't contaminate the main agent.
+
+    **Best for**: Complex research, analysis, and multi-domain tasks.
+  </Step>
+</Steps>
+
+## Quick decision framework
+
+| Scenario | Recommended approach |
+|---|---|
+| Static content | Pre-inference retrieval or hybrid |
+| Dynamic exploration needed | Just-in-time context |
+| Extended back-and-forth | Compaction |
+| Iterative development | Structured note-taking |
+| Complex research | Sub-agent architectures |
+| Rapid model improvement | "Do the simplest thing that works" |
+
+## Anti-patterns to avoid
+
+<Warning>
+  These are the most common ways context engineering goes wrong:
+
+  - Cramming everything into the system prompt
+  - Creating brittle if-else logic in instructions
+  - Building bloated tool sets with overlapping purposes
+  - Stuffing exhaustive edge cases as examples
+  - Assuming larger context windows solve the attention problem
+  - Ignoring context pollution over long interactions
+</Warning>
+
+## Key takeaways
+
+1. **Context is finite**: Treat it as a precious resource with a depletable attention budget.
+2. **Think holistically**: Consider the entire state available to the model, not just the system prompt.
+3. **Stay minimal**: More context is not always better — each token has a cost.
+4. **Be iterative**: Context curation happens every time you pass to the model, not just at setup.
+5. **Design for autonomy**: As models improve, let them act intelligently rather than over-specifying behavior.
+6. **Start simple**: Test with minimal setup, add complexity based on observed failure modes.
+
+<Note>
+  "Even as models continue to improve, the challenge of maintaining coherence across extended interactions will remain central to building more effective agents."
+
+  Context engineering will evolve, but the core principle stays the same: optimize the signal-to-noise ratio in your token budget.
+</Note>
+
+## How Claude Mem addresses these challenges
+
+Claude Mem applies context engineering principles at the system level so individual sessions start with a curated, high-signal token set rather than a raw dump of history.
+
+- **Progressive disclosure**: The session start hook injects a compact index (~800 tokens) rather than full observation text, giving the agent information about what exists before it decides what to fetch. See [Progressive disclosure](/progressive-disclosure).
+- **Just-in-time retrieval**: MCP search tools (`search`, `timeline`, `get_observations`) let the agent fetch full observation details on demand, paying the token cost only for content that's actually relevant.
+- **Semantic compression**: Observations are stored with concise, searchable titles that compress hundreds of tokens of content into ~10 words — enough to make a retrieval decision without fetching.
+- **Structured note-taking**: The `PostToolUse` hook captures observations automatically, creating an external memory store that persists outside the context window across sessions.
+
+## Further reading
+
+<Columns cols={2}>
+  <Card title="Progressive disclosure" icon="layers" href="/progressive-disclosure">
+    The philosophy behind Claude Mem's 3-layer context priming strategy and why it works.
+  </Card>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    How Claude Mem's hooks, worker, and MCP tools fit together.
+  </Card>
+</Columns>
+
+*Based on Anthropic's "Effective context engineering for AI agents" (September 2025)*

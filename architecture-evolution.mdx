@@ -1,0 +1,628 @@
+---
+title: "Architecture evolution"
+description: "The journey from naive memory dumps in v1–v2 to the AI-compressed, progressive-disclosure, hook-driven architecture of v5+. Why each version changed and what it unlocked."
+---
+
+# Architecture evolution
+
+## The problem
+
+**Goal:** Make Claude smarter across sessions without the user noticing the memory system exists.
+
+**Challenge:** How do you observe AI agent behavior, compress it intelligently, and serve it back at the right time — all without slowing down or interfering with the main workflow?
+
+This is the story of how Claude Mem evolved from a simple idea to a production-ready system, and the key architectural decisions that made it work.
+
+---
+
+## v1–v2: The naive approach
+
+### Dump everything
+
+```plaintext
+PostToolUse Hook → Save raw tool outputs → Retrieve everything on startup
+```
+
+The first implementation was simple: save every tool output to a file, load everything at the next session start.
+
+**What we learned:**
+
+| Symptom | Root cause |
+|---|---|
+| Context window polluted | Raw tool outputs are verbose — 35,000 tokens for a typical session |
+| Nothing relevant | Only ~500 of those tokens related to the current task (1.4%) |
+| No search | Linear scan required |
+| Concept proved | Memory across sessions is genuinely valuable |
+
+Example of what went wrong:
+```
+SessionStart loaded:
+- 150 file read operations
+- 80 grep searches
+- 45 bash commands
+Total: ~35,000 tokens loaded
+Relevant to current task: ~500 tokens (1.4%)
+```
+
+---
+
+## v3: Smart compression, wrong architecture
+
+### The breakthrough: AI-powered compression
+
+The core insight: use Claude itself to compress observations.
+
+```plaintext
+PostToolUse Hook → Queue observation → SDK Worker → AI compression → Store insights
+```
+
+**What worked:**
+- Compression ratio: 10:1 to 100:1
+- Semantic understanding (not just keyword matching)
+- Background processing (hooks stayed fast)
+- Search became useful
+
+**What didn't work:**
+
+| Problem | Impact |
+|---|---|
+| Still loaded everything upfront | Context still bloated |
+| Session ID management broken | SDK session IDs change every turn — observations got orphaned |
+| Aggressive cleanup | `SessionEnd → DELETE /worker/session` interrupted summaries mid-process |
+| Multiple SDK sessions per conversation | 100+ short SDK sessions instead of one long one |
+
+---
+
+## The key realizations
+
+### Realization 1: Progressive disclosure
+
+**Problem:** Even compressed observations pollute context if you load them all.
+
+**Insight:** Humans don't read an entire codebase before starting work. Why should AI?
+
+**Solution:** Show an index first, fetch details on-demand.
+
+```plaintext
+❌ Old: Load 50 observations upfront    → 8,500 tokens
+✅ New: Show index of 50 observations   →   800 tokens
+        Agent fetches 2–3 relevant ones →   300 tokens
+        Total: 1,100 tokens (87% savings)
+```
+
+Impact: 87% reduction in context usage, 100% relevance (agent decides what to fetch).
+
+### Realization 2: Session ID chaos
+
+**Problem:** SDK session IDs change on every turn.
+
+```typescript
+// ❌ Wrong assumption
+UserPromptSubmit → Capture session ID once → Use forever
+
+// ✅ Actual behavior
+Turn 1: session_abc123
+Turn 2: session_def456
+Turn 3: session_ghi789
+```
+
+**Solution:** Capture the session ID from the SDK's `system.init` message and update the database on each turn. Use `INSERT OR IGNORE` with the Claude Code session ID (from hook stdin) as the unique key — it never changes within a conversation.
+
+### Realization 3: Graceful vs aggressive cleanup
+
+**v3 approach (broken):**
+```typescript
+// Kills worker immediately — summaries get interrupted
+SessionEnd → DELETE /worker/session → Worker stops
+```
+
+**v4 approach (fixed):**
+```typescript
+// Mark complete, let worker finish on its own
+SessionEnd → UPDATE sdk_sessions SET completed_at = NOW()
+Worker sees completion → Finishes processing → Exits naturally
+```
+
+### Realization 4: One session, not many
+
+**Problem:** Creating a new SDK session per observation meant 100+ short sessions per conversation.
+
+**Solution:** One long-running SDK session with streaming input:
+
+```typescript
+// ✅ Streaming input mode
+async function* messageGenerator(): AsyncIterable<UserMessage> {
+  yield { role: "user", content: "You are a memory assistant..." };
+
+  while (session.status === 'active') {
+    const observations = await pollQueue();
+    for (const obs of observations) {
+      yield { role: "user", content: formatObservation(obs) };
+    }
+    await sleep(1000);
+  }
+}
+
+const response = query({
+  prompt: messageGenerator(),
+  options: { maxTurns: 1000 }
+});
+```
+
+Benefits: SDK maintains conversation state, context accumulates naturally, much more efficient.
+
+---
+
+## v4: The architecture that works
+
+### Core design
+
+```plaintext
+┌─────────────────────────────────────────────────────────┐
+│              CLAUDE CODE SESSION                         │
+│  User → Claude → Tools (Read, Edit, Write, Bash)        │
+│                    ↓                                     │
+│              PostToolUse Hook                            │
+│              (queues observation)                        │
+└─────────────────────────────────────────────────────────┘
+                     ↓ SQLite queue
+┌─────────────────────────────────────────────────────────┐
+│              SDK WORKER PROCESS                          │
+│  ONE streaming session per Claude Code session          │
+│                                                          │
+│  AsyncIterable<UserMessage>                             │
+│    → Yields observations from queue                     │
+│    → SDK compresses via AI                              │
+│    → Parses XML responses                               │
+│    → Stores in database                                 │
+└─────────────────────────────────────────────────────────┘
+                     ↓ SQLite storage
+┌─────────────────────────────────────────────────────────┐
+│              NEXT SESSION                                │
+│  SessionStart Hook                                       │
+│    → Queries database                                    │
+│    → Returns progressive disclosure index               │
+│    → Agent fetches details via MCP                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+### The five-hook architecture
+
+<Tabs>
+  <Tab title="SessionStart">
+    **Purpose:** Inject context from previous sessions
+
+    **Timing:** When Claude Code starts
+
+    **What it does:**
+    - Queries last 10 session summaries
+    - Formats as progressive disclosure index with token counts
+    - Injects into context via `hookSpecificOutput.additionalContext`
+
+    **Key changes from v3:**
+    - Index format (not full details)
+    - Token counts visible in the index
+    - MCP search instructions included
+  </Tab>
+  <Tab title="UserPromptSubmit">
+    **Purpose:** Initialize session tracking
+
+    **Timing:** Before Claude processes the prompt
+
+    **What it does:**
+    - Creates session record (idempotent `INSERT OR IGNORE`)
+    - Saves raw user prompt for full-text search (v4.2.0+)
+    - Auto-starts worker service if not running
+
+    **Key changes from v3:**
+    - Stores raw prompts for FTS5 search
+    - Idempotent — continuation prompts reuse existing session row
+  </Tab>
+  <Tab title="PostToolUse">
+    **Purpose:** Capture tool observations
+
+    **Timing:** After every tool execution
+
+    **What it does:**
+    - Skips low-value tools (TodoWrite, AskUserQuestion, etc.)
+    - HTTP POSTs to worker (fire-and-forget, 2s timeout)
+    - Returns immediately (~8ms)
+
+    **Key changes from v3:**
+    - Just enqueues — no in-hook processing
+    - Worker handles all AI calls asynchronously
+  </Tab>
+  <Tab title="Stop">
+    **Purpose:** Generate session summaries
+
+    **Timing:** When Claude stops responding
+
+    **What it does:**
+    - Reads transcript JSONL to extract last messages
+    - Sends summarization request to worker (fire-and-forget)
+
+    **Key changes from v3:**
+    - Multiple summaries per session (v4.2.0+)
+    - Summaries are checkpoints, not session endings
+  </Tab>
+  <Tab title="SessionEnd">
+    **Purpose:** Graceful cleanup
+
+    **Timing:** When the session closes
+
+    **What it does:**
+    - Marks session as `completed` in database
+    - Worker finishes pending operations naturally
+    - Broadcasts completion event to SSE clients
+
+    **Key changes from v3:**
+    - Graceful (marks complete) — not aggressive (DELETE)
+    - No forced worker termination
+  </Tab>
+</Tabs>
+
+### Database schema evolution
+
+**v3 schema (flat):**
+```sql
+CREATE TABLE observations (
+  id         INTEGER PRIMARY KEY,
+  session_id TEXT,
+  text       TEXT,
+  created_at INTEGER
+);
+```
+
+**v4 schema (structured):**
+```sql
+CREATE TABLE observations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      TEXT NOT NULL,
+  project         TEXT NOT NULL,
+  title           TEXT NOT NULL,         -- Progressive disclosure metadata
+  subtitle        TEXT,
+  type            TEXT NOT NULL,         -- decision, bugfix, feature, etc.
+  narrative       TEXT NOT NULL,
+  facts           TEXT,                  -- JSON array
+  concepts        TEXT,                  -- JSON array of tags
+  files_read      TEXT,                  -- JSON array
+  files_modified  TEXT,                  -- JSON array
+  created_at      TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES sdk_sessions(id)
+);
+
+-- FTS5 for full-text search (100x faster than LIKE queries)
+CREATE VIRTUAL TABLE observations_fts USING fts5(
+  title, subtitle, narrative, facts, concepts,
+  content=observations
+);
+```
+
+---
+
+## Critical bug fixes in v4
+
+### Context injection pollution (v4.3.1)
+
+`npm install` output was mixing with hook stdout, corrupting the JSON that Claude Code expected.
+
+```bash
+# Broken output (v4.3.0)
+npm WARN deprecated node@1.0.0...
+npm WARN deprecated ...
+{"hookSpecificOutput": {"additionalContext": "..."}}
+```
+
+Fix: add `--loglevel=silent` to the npm install command so only the hook JSON reaches stdout.
+
+### Double shebang issue (v4.3.1)
+
+Source files had `#!/usr/bin/env node` — and esbuild added another one during the build step. The resulting executables had two shebangs and failed to parse.
+
+Fix: remove shebangs from source files and let esbuild add them during the build.
+
+### FTS5 injection vulnerability (v4.2.3)
+
+User input was passed directly to the FTS5 query string:
+
+```typescript
+// ❌ Vulnerable
+const results = db.query(
+  `SELECT * FROM observations_fts WHERE observations_fts MATCH '${userQuery}'`
+);
+```
+
+Fix: use parameterized queries:
+
+```typescript
+// ✅ Safe
+const results = db.query(
+  'SELECT * FROM observations_fts WHERE observations_fts MATCH ?',
+  [userQuery]
+);
+```
+
+### NOT NULL constraint violation (v4.2.8)
+
+Session creation failed when the user prompt was empty (e.g., automated tool invocations). Fixed by changing `user_prompt TEXT NOT NULL` to `user_prompt TEXT` (nullable).
+
+---
+
+## v5: Maturity and user experience
+
+### v5.0.0: Hybrid search (October 2025)
+
+Added optional Chroma vector database alongside SQLite FTS5:
+
+```plaintext
+Text query → SQLite FTS5 (keyword matching)
+                   ↓
+         Chroma vector search (semantic)
+                   ↓
+           Merge + re-rank results
+```
+
+- FTS5: fast keyword matching, no extra dependencies
+- Chroma: semantic understanding, finds related concepts
+- Graceful degradation: works without Chroma (FTS5 only)
+
+### v5.0.2: Worker health checks (October 2025)
+
+More robust worker startup and monitoring:
+
+```typescript
+async function ensureWorkerHealthy() {
+  const healthy = await isWorkerHealthy(1000);
+  if (!healthy) {
+    await startWorker();
+    await waitForWorkerHealth(10000);
+  }
+}
+```
+
+### v5.0.3: Smart install caching (October 2025)
+
+Version-based caching eliminated the 2–5 second `npm install` on every startup:
+
+```typescript
+const currentVersion = getPackageVersion();
+const installedVersion = readFileSync('.install-version', 'utf-8');
+
+if (currentVersion !== installedVersion) {
+  await runNpmInstall();
+  writeFileSync('.install-version', currentVersion);
+}
+```
+
+SessionStart hook: 2–5 seconds → ~10ms (99.5% faster on cached runs).
+
+### v5.1.0: Web-based viewer UI (October 2025)
+
+Real-time visualization of the memory stream:
+
+- React web UI at `http://localhost:37777`
+- Server-Sent Events (SSE) for live updates
+- Infinite scroll pagination
+- Project filtering and settings persistence
+
+New worker endpoints:
+```
+GET /              # Viewer HTML
+GET /stream        # SSE real-time events
+GET /api/prompts   # Paginated user prompts
+GET /api/observations  # Paginated observations
+GET /api/summaries # Paginated session summaries
+GET /api/stats     # Database statistics
+```
+
+### v5.1.2: Theme toggle (November 2025)
+
+Added light/dark/system theme preference to the viewer UI with `localStorage` persistence.
+
+---
+
+## MCP architecture simplification (December 2025)
+
+### Before: 9+ overlapping MCP tools
+
+```plaintext
+9+ MCP tools registered at session start:
+- search_observations
+- find_by_type
+- find_by_file
+- find_by_concept
+- get_recent_context
+- get_observation
+- get_session
+- get_prompt
+- help
+
+Problems:
+- Overlapping operations (search_observations vs find_by_type)
+- Complex parameter schemas (~2,500 tokens in tool definitions)
+- No built-in workflow guidance
+- High cognitive load — which tool to use?
+- Code size: ~2,718 lines in mcp-server.ts
+```
+
+### After: 4 tools, 3-layer workflow
+
+```plaintext
+4 MCP tools following 3-layer progressive disclosure:
+
+1. __IMPORTANT — Workflow documentation (always visible)
+   "3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    1. search(query)        → Get index with IDs
+    2. timeline(anchor=ID)  → Get context around that point
+    3. get_observations([IDs]) → Fetch full details only if needed
+    NEVER fetch full details without filtering first."
+
+2. search         — Layer 1: Index (~50–100 tokens/result)
+3. timeline       — Layer 2: Chronological context
+4. get_observations — Layer 3: Full details (~500–1,000 tokens/result)
+```
+
+**Token efficiency comparison:**
+```plaintext
+Traditional approach:
+  Fetch 20 observations upfront → 10,000–20,000 tokens
+  Only 2 relevant (90% waste)
+
+3-layer workflow:
+  search (20 results)         → 1,000–2,000 tokens
+  Identify 3 relevant IDs     →     0 tokens
+  get_observations (3 IDs)    → 1,500–3,000 tokens
+  Total: 2,500–5,000 tokens   (50–75% savings)
+```
+
+**Code reduction:**
+- MCP server: 2,718 lines → 312 lines (88% reduction)
+- Removed: 19 skill files (~2,744 lines)
+- Net: ~5,150 lines of code removed
+
+### Skill-based search → MCP-only (v5.4.0+)
+
+Before v5.4.0, Claude Mem used skill files (17 Markdown files) and HTTP API calls via `curl` to implement search. This was replaced with native MCP tools:
+
+- Works with both Claude Desktop and Claude Code
+- No `curl` dependency
+- Simpler to maintain
+- All 19 `mem-search` skill files removed (~2,744 lines)
+
+---
+
+## Performance comparison across versions
+
+### v3 baseline
+
+| Metric | Value |
+|---|---|
+| Context usage per session | ~25,000 tokens |
+| Relevant context | ~2,000 tokens (8%) |
+| Hook execution time | ~200ms |
+| Search latency | ~500ms (LIKE queries) |
+
+### v4 improvements
+
+| Metric | Value | vs v3 |
+|---|---|---|
+| Context usage per session | ~1,100 tokens | −96% |
+| Relevant context | ~1,100 tokens (100%) | +12× relevance |
+| Hook execution time | ~45ms | 4× faster |
+| Search latency | ~15ms (FTS5) | 33× faster |
+
+### v5 improvements
+
+| Metric | Value | vs v4 |
+|---|---|---|
+| Context usage per session | ~1,100 tokens | Same |
+| Hook execution time | ~10ms (cached) | 4× faster |
+| Search latency | ~12ms FTS5 / ~25ms hybrid | Slightly faster |
+| Viewer UI load time | ~50ms (bundled HTML) | New |
+| SSE update latency | ~5ms | New |
+
+---
+
+## PM2 → Bun migration (v7.1.0, December 2025)
+
+Version 7.1.0 replaced PM2 (external process manager) with a custom Bun-based `ProcessManager`:
+
+| Aspect | PM2 (old) | Bun ProcessManager (new) |
+|---|---|---|
+| External dependency | Yes (`pm2` npm package) | No |
+| Native compilation | Via `better-sqlite3` | No (`bun:sqlite` built in) |
+| Windows issues | PATH and ENOENT errors | Handled by Bun |
+| PID file location | `~/.pm2/pids/` | `~/.claude-mem/.worker.pid` |
+| Log location | `~/.pm2/logs/` | `~/.claude-mem/logs/` |
+| Migration | Automatic on first hook trigger | — |
+
+Migration is one-time and transparent. See [PM2 to Bun Migration](/architecture/pm2-to-bun-migration) for the complete technical details.
+
+---
+
+## Lessons learned
+
+<AccordionGroup>
+  <Accordion title="Context is finite — respect the budget">
+    Every token in the context window costs attention and money. Progressive disclosure reduces waste by 87% and gives the agent control over what it loads.
+  </Accordion>
+
+  <Accordion title="AI is the compressor">
+    Manual extraction rules can't match semantic AI compression. Compression ratios of 10:1 to 100:1 are achievable, with semantic understanding rather than keyword extraction.
+  </Accordion>
+
+  <Accordion title="Session state is complicated">
+    The SDK handles conversation state better than manual reconstruction. Track session IDs from `system.init` messages; use `INSERT OR IGNORE` for idempotency.
+  </Accordion>
+
+  <Accordion title="Graceful beats aggressive">
+    Let processes finish their work before terminating. Aggressive `DELETE` calls interrupt summaries and lose pending observations. A simple `completed_at` timestamp lets workers exit cleanly.
+  </Accordion>
+
+  <Accordion title="Progressive everything">
+    Show metadata first, fetch details on-demand. This applies to context injection, search results, and MCP tool design.
+  </Accordion>
+
+  <Accordion title="Visibility matters">
+    v5 added a real-time viewer UI. Users don't need to see the memory system working, but being able to inspect it builds trust and aids debugging.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Migration guide: v3 → v5
+
+<Steps>
+  <Step title="Backup your database">
+    ```bash
+    cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem-v3-backup.db
+    ```
+  </Step>
+  <Step title="Pull the latest plugin">
+    ```bash
+    cd ~/.claude/plugins/marketplaces/thedotmack
+    git pull
+    ```
+  </Step>
+  <Step title="Update the plugin">
+    ```bash
+    /plugin update claude-mem
+    ```
+
+    This automatically:
+    - Updates dependencies (including Chroma for v5.0.0+)
+    - Runs database schema migrations
+    - Restarts the worker service with new code
+    - Activates smart install caching (v5.0.3+)
+  </Step>
+  <Step title="Test the installation">
+    ```bash
+    claude
+
+    # Context should inject on startup (progressive disclosure index)
+    # Open the viewer UI
+    open http://localhost:37777
+
+    # Submit a prompt and watch real-time updates
+    ```
+  </Step>
+  <Step title="Explore new features">
+    ```bash
+    # Toggle theme in the viewer header (v5.1.2+)
+    open http://localhost:37777
+
+    # Check worker health
+    npm run worker:status
+    curl http://localhost:37777/health
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Further reading
+
+- [Hooks Architecture](/hooks-architecture) — How hooks power the system
+- [Hook Scripts Reference](/architecture/hooks) — Complete technical reference for all 7 hooks
+- [PM2 to Bun Migration](/architecture/pm2-to-bun-migration) — v7.1.0 process management migration

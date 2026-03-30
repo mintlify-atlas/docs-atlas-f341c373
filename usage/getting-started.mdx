@@ -1,0 +1,283 @@
+---
+title: "Getting Started"
+description: "How Claude-Mem works automatically — what gets captured, how context is injected, and how to search your history"
+---
+
+# Getting Started with Claude-Mem
+
+## Automatic Operation
+
+Claude-Mem works automatically once installed. No manual intervention is required.
+
+<Info>
+Every session start, tool execution, and session end is handled by Claude-Mem's lifecycle hooks running silently in the background. You work normally with Claude Code; Claude-Mem handles the rest.
+</Info>
+
+### The Full Cycle
+
+<Steps>
+  <Step title="Start Claude Code">
+    Context from your last 10 sessions appears automatically. Claude immediately knows what you were working on, what files were touched, and what was accomplished.
+  </Step>
+  <Step title="Work Normally">
+    Every tool execution is captured — file reads, writes, edits, bash commands, searches, and all other Claude Code tools.
+  </Step>
+  <Step title="Claude Finishes Responding">
+    The `Stop` hook fires automatically and generates a structured session summary covering what was requested, investigated, learned, completed, and suggested next steps.
+  </Step>
+  <Step title="Next Session">
+    The summary and captured observations from the previous session appear in context. Claude picks up where it left off.
+  </Step>
+</Steps>
+
+## What Gets Captured
+
+Every time Claude uses a tool, Claude-Mem captures the observation:
+
+<CardGroup cols={2}>
+  <Card title="Read" icon="file">
+    File reads and content access — including which files were opened and what sections were examined.
+  </Card>
+  <Card title="Write" icon="pen">
+    New file creation — what was written and where.
+  </Card>
+  <Card title="Edit" icon="pencil">
+    File modifications — what changed, in which file, at what line.
+  </Card>
+  <Card title="Bash" icon="terminal">
+    Command executions — commands run, output returned, exit codes.
+  </Card>
+  <Card title="Glob" icon="folder-magnifying-glass">
+    File pattern searches — what patterns were searched and what matched.
+  </Card>
+  <Card title="Grep" icon="magnifying-glass">
+    Content searches — search queries, matched files, and result counts.
+  </Card>
+</CardGroup>
+
+All other Claude Code tools are also captured automatically.
+
+## What Gets Extracted
+
+The background worker service processes raw tool observations using the Claude Agent SDK and extracts structured data from each:
+
+| Field | Description |
+|---|---|
+| **Title** | Brief description of what happened |
+| **Subtitle** | Additional context for the observation |
+| **Narrative** | Detailed explanation of the tool use and its significance |
+| **Facts** | Key learnings as bullet points |
+| **Concepts** | Relevant tags and categories for search |
+| **Type** | Classification: `decision`, `bugfix`, `feature`, `exploration`, etc. |
+| **Files** | Which files were read or modified |
+
+## Session Summaries
+
+When the `Stop` hook fires at the end of each Claude response, a full session summary is generated and stored:
+
+<Accordion title="Summary Fields">
+  | Field | Description |
+  |---|---|
+  | **Request** | What you asked for in this session |
+  | **Investigated** | What Claude explored to fulfill the request |
+  | **Learned** | Key discoveries and insights from the session |
+  | **Completed** | What was accomplished |
+  | **Next Steps** | Suggested follow-up actions |
+</Accordion>
+
+## Context Injection
+
+When you start a new Claude Code session, the `SessionStart` hook:
+
+1. Queries the database for recent observations in your project (default: 50)
+2. Retrieves recent session summaries for context
+3. Displays observations in a chronological timeline with session markers
+4. Checks whether the most recent summary is newer than the most recent observation
+5. Injects formatted context into Claude's initial context window
+
+### Summary Display Logic
+
+The most recent summary's full details appear at the end of the context **only when** the summary was generated after the most recent observation. This prevents stale summaries from misleading Claude about the current project state:
+
+<Tabs>
+  <Tab title="Summary Shown">
+    Last observation captured at 2:00 PM, summary generated at 2:05 PM.
+
+    **Result**: Full summary details appear — the summary represents the latest state of the project.
+  </Tab>
+  <Tab title="Summary Hidden">
+    Summary generated at 2:00 PM, new observation captured at 2:05 PM.
+
+    **Result**: Summary details are hidden — new work has been done since the last summary, so the summary is considered outdated.
+  </Tab>
+</Tabs>
+
+## Progressive Disclosure
+
+Context injection uses a layered approach to keep token usage efficient while still providing access to full history when needed:
+
+<Steps>
+  <Step title="Layer 1: Index Display (Session Start)">
+    Shows observation titles with token cost estimates, session markers in a chronological timeline, and observations grouped by file. Shows full summary details only if the summary was generated after the last observation.
+
+    **Token cost**: ~50–200 tokens for the index view.
+  </Step>
+  <Step title="Layer 2: On-Demand Details (MCP Tools)">
+    Ask naturally — `"What bugs did we fix?"` or `"How did we implement authentication?"` — and Claude auto-invokes MCP search tools to fetch full observation details.
+
+    Search supports concept, file, type, and keyword filters. The 3-layer workflow (search → timeline → get_observations) minimizes token usage.
+
+    **Token cost**: ~100–500 tokens per observation fetched.
+  </Step>
+  <Step title="Layer 3: Perfect Recall (Code Access)">
+    Read source files directly for raw data and original transcripts. Full context is always available on-demand.
+  </Step>
+</Steps>
+
+## Privacy Control
+
+Wrap any content in `<private>` tags to prevent it from being stored:
+
+```
+<private>
+My API key is sk-...
+</private>
+```
+
+Tag stripping happens at the hook layer (edge processing) before data reaches the worker or database. The content is never persisted.
+
+<Warning>
+The `<private>` tag prevents storage of the wrapped content only. Any content outside the tags in the same prompt or tool output is still captured normally.
+</Warning>
+
+## Searching Your History
+
+Claude-Mem provides MCP tools for querying your project history. Ask naturally in any Claude Code session:
+
+```
+"What bugs did we fix last session?"
+"How did we implement authentication?"
+"What changes were made to worker-service.ts?"
+"Show me recent work on this project"
+```
+
+Claude automatically recognizes your intent and invokes the MCP search tools, using the 3-layer workflow (search → timeline → get_observations) for efficient token usage.
+
+## Web Viewer UI
+
+The background worker service hosts a real-time memory stream at `http://localhost:37777`. The viewer shows:
+
+- Live observation feed with SSE (Server-Sent Events) updates
+- Infinite scroll through your full observation history
+- Session markers and chronological timeline
+- Full observation details on click
+- Version channel management (switch between stable and beta)
+
+<Tip>
+Open the web viewer while Claude is working to watch observations appear in real time as tools are executed.
+</Tip>
+
+## Multi-Prompt Sessions and `/clear`
+
+Claude-Mem supports sessions that span multiple user prompts:
+
+- **`prompt_counter`**: Tracks the total number of prompts in a session
+- **`prompt_number`**: Identifies the specific prompt within a session
+- **Session continuity**: All observations and summaries link across prompts in the same session
+
+### What Happens When You Use `/clear`
+
+When you use `/clear`, the session does not end — it continues with a new prompt number:
+
+- Context is re-injected from recent sessions (`SessionStart` hook fires with `source: "clear"`)
+- Observations continue being captured and added to the current session
+- A summary is generated when Claude finishes responding (`Stop` hook fires)
+
+The `/clear` command clears the conversation context visible to Claude and re-injects fresh context from recent sessions, while the underlying session keeps tracking observations.
+
+## Manual Worker Commands
+
+The worker service auto-starts on your first session (v4.0+). These commands are optional:
+
+<CodeGroup>
+  ```bash Worker Control
+  # Start worker service
+  npm run worker:start
+
+  # Stop worker service
+  npm run worker:stop
+
+  # Restart worker service
+  npm run worker:restart
+
+  # View worker logs
+  npm run worker:logs
+
+  # Check worker status
+  npm run worker:status
+  ```
+
+  ```bash Testing
+  # Run all tests
+  npm test
+
+  # Test context injection
+  npm run test:context
+
+  # Verbose context test
+  npm run test:context:verbose
+  ```
+
+  ```bash Development
+  # Build hooks and worker
+  npm run build
+
+  # Build only hooks
+  npm run build:hooks
+  ```
+</CodeGroup>
+
+## Querying the Database Directly
+
+Context is stored in a SQLite database at `~/.claude-mem/claude-mem.db`. You can query it directly:
+
+```sql
+-- View recent sessions
+SELECT session_id, project, created_at, status
+FROM sdk_sessions
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- View session summaries
+SELECT session_id, request, completed, learned
+FROM session_summaries
+ORDER BY created_at DESC
+LIMIT 5;
+
+-- View observations for a specific session
+SELECT tool_name, created_at
+FROM observations
+WHERE session_id = 'YOUR_SESSION_ID';
+```
+
+```bash
+# Open the database
+sqlite3 ~/.claude-mem/claude-mem.db
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Deep dive into the 3-layer search workflow and all available search filters.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Tune observation limits, context injection, AI model, and privacy settings.
+  </Card>
+  <Card title="Architecture Overview" icon="diagram-project" href="/architecture/overview">
+    Understand how the hooks, worker, database, and search system fit together.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting">
+    Solutions for missing context, worker startup failures, and other common issues.
+  </Card>
+</CardGroup>

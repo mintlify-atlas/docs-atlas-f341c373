@@ -1,0 +1,247 @@
+---
+title: "Beta Features"
+description: "Try experimental features like Endless Mode before they reach the stable release channel"
+---
+
+# Beta Features
+
+<Warning>
+**Endless Mode is experimental and not included in the stable release.** You must manually switch to the beta channel to try it. Efficiency projections are based on theoretical modeling, not production measurements. Expect slower performance than standard mode and potential bugs.
+</Warning>
+
+Claude-Mem offers a beta channel for users who want to try experimental features before they're released to the stable channel. The primary beta feature is **Endless Mode** — a biomimetic memory architecture designed to extend how long Claude can maintain context in a single session.
+
+## Version Channel Switching
+
+Switch between the stable and beta versions directly from the Web Viewer UI — no command line required.
+
+### How to Switch Channels
+
+<Steps>
+  <Step title="Open the Web Viewer">
+    Navigate to `http://localhost:37777` in your browser.
+  </Step>
+  <Step title="Open Settings">
+    Click the **Settings** gear icon in the top-right corner.
+  </Step>
+  <Step title="Find the Version Channel section">
+    Locate the **Version Channel** section in the Settings panel.
+  </Step>
+  <Step title="Switch channels">
+    Click **Try Beta (Endless Mode)** to switch to beta, or **Switch to Stable** to return to the production release.
+  </Step>
+</Steps>
+
+### What Happens During a Channel Switch
+
+When you switch versions, the following steps occur automatically:
+
+1. **Local changes are discarded** — Any modifications in the plugin directory are reset
+2. **Git fetch and checkout** — The installed plugin switches to the target branch
+3. **Dependencies reinstall** — `npm install` runs to ensure correct dependencies for the branch
+4. **Worker restarts automatically** — The background service restarts with the new version
+
+<Note>
+**Your memory data is always preserved.** The database at `~/.claude-mem/claude-mem.db` is not affected by version switching. All your observations, sessions, and summaries remain intact.
+</Note>
+
+### Version Status Indicators
+
+The Version Channel section in Settings shows your current channel:
+
+| Badge | Color | Meaning |
+|---|---|---|
+| **Stable** | Green | You're running the production release |
+| **Beta** | Orange | You're running the beta with experimental features |
+
+The exact branch name is also displayed — for example, `main` for stable or `beta/endless-mode` for beta.
+
+---
+
+## Endless Mode (Beta)
+
+The flagship experimental feature in the beta channel is **Endless Mode** — a biomimetic memory architecture that dramatically extends how long Claude can maintain context in a session.
+
+### The Problem Endless Mode Solves
+
+In standard Claude Code sessions, context window exhaustion is a fundamental constraint:
+
+- Tool outputs (file reads, bash output, search results) accumulate in the context window
+- Each tool call can add 1,000–10,000+ tokens to the context
+- After roughly 50 tool uses, the context window fills (~200k tokens)
+- You're forced to start a new session, losing conversational continuity
+
+Worse, Claude **re-synthesizes all previous tool outputs** on every response. This is O(N²) complexity — the compute and token cost grows quadratically with the number of tool uses.
+
+### How Endless Mode Works
+
+Endless Mode applies a two-tier memory architecture inspired by how human memory works:
+
+```
+Working Memory (Context Window):
+  → Compressed observations only (~500 tokens each)
+  → Fast, efficient, manageable
+
+Archive Memory (Transcript File):
+  → Full tool outputs preserved on disk
+  → Perfect recall, searchable on demand
+```
+
+**The key innovation**: After each tool use, Endless Mode:
+
+1. Waits for the worker to generate a compressed observation (blocking, up to 110 seconds)
+2. Transforms the transcript file on disk
+3. Replaces the full tool output with the compressed observation
+4. Claude resumes with the smaller, compressed context
+
+This transforms O(N²) scaling into O(N) — linear instead of quadratic.
+
+### Key Architecture Components
+
+<Accordion title="Pre-Tool-Use Hook">
+  Tracks the start of each tool execution and sends a `tool_use_id` to the worker service for correlation.
+</Accordion>
+
+<Accordion title="Save Hook (PostToolUse) — Critical">
+  Blocks execution until a compressed observation is generated (110-second timeout). This is what makes Endless Mode synchronous — the full tool output is replaced before Claude's next response begins.
+</Accordion>
+
+<Accordion title="SessionManager.waitForNextObservation()">
+  An event-driven wait mechanism with no polling. The hook subscribes to completion events from the SDKAgent rather than checking the database on an interval.
+</Accordion>
+
+<Accordion title="SDKAgent">
+  Generates observations via the Claude Agent SDK and emits completion events that unblock the waiting Save Hook.
+</Accordion>
+
+<Accordion title="Database Schema">
+  Extended with a `tool_use_id` column for observation correlation between the Pre-Tool-Use hook and the Save Hook.
+</Accordion>
+
+### Projected Results
+
+<Warning>
+The following efficiency projections are based on theoretical modeling and simulations — **not production measurements**. Real-world results may differ.
+</Warning>
+
+- **Token savings**: Significant reduction in context window usage per session
+- **Efficiency gain**: More tool uses possible before context exhaustion
+- **Quality preservation**: Observations cache the synthesis result, so no information is lost from the full tool output
+
+### Important Caveats
+
+<CardGroup cols={2}>
+  <Card title="Not in Stable Release" icon="triangle-exclamation">
+    You must manually switch to the beta branch to use this feature. It is not available on the `main` branch.
+  </Card>
+  <Card title="Slower Than Standard Mode" icon="clock">
+    The blocking observation generation step adds latency to every tool use while the worker processes the output.
+  </Card>
+  <Card title="Theoretical Projections" icon="flask">
+    Efficiency claims are based on simulations, not real-world production data. Results have not been validated at scale.
+  </Card>
+  <Card title="New Architecture" icon="wrench">
+    Less battle-tested than standard mode. May have bugs, breaking changes, or incomplete functionality.
+  </Card>
+</CardGroup>
+
+### When to Use Beta
+
+Consider switching to the beta channel if you:
+
+- Frequently hit context window limits during long sessions
+- Work on complex, multi-hour sessions with many tool uses
+- Want to help test and provide feedback on new features
+- Are comfortable with experimental software and occasional instability
+
+### When to Stay on Stable
+
+Stay on the stable channel if you:
+
+- Need maximum reliability for critical or production work
+- Prefer battle-tested, production-ready features
+- Do not frequently hit context window limits
+- Want the smoothest and fastest experience
+
+---
+
+## Manual Channel Switching (Command Line)
+
+If you prefer the command line over the web viewer:
+
+<Tabs>
+  <Tab title="Switch to Beta">
+    ```bash
+    # Navigate to your claude-mem installation
+    cd ~/.claude/plugins/marketplaces/thedotmack/
+
+    # Checkout the beta branch
+    git checkout beta/endless-mode
+
+    # Install dependencies for the beta branch
+    npm install
+
+    # Restart the worker with the new version
+    npm run worker:restart
+    ```
+  </Tab>
+  <Tab title="Switch Back to Stable">
+    ```bash
+    # Navigate to your claude-mem installation
+    cd ~/.claude/plugins/marketplaces/thedotmack/
+
+    # Return to the stable main branch
+    git checkout main
+
+    # Reinstall dependencies
+    npm install
+
+    # Restart the worker
+    npm run worker:restart
+    ```
+  </Tab>
+</Tabs>
+
+## Checking for Updates
+
+While on either channel, you can pull the latest changes:
+
+1. Open Settings in the web viewer (`http://localhost:37777`)
+2. In the Version Channel section, click **Check for Updates**
+3. The plugin pulls the latest changes and restarts automatically
+
+## Switching Back to Stable
+
+If you encounter issues on beta:
+
+1. Open Settings in the web viewer
+2. Click **Switch to Stable**
+3. Wait for the worker to restart
+
+Your memory data is fully preserved through the switch, and you'll be back on the stable release immediately.
+
+## Providing Feedback
+
+If you encounter bugs or have feedback about beta features:
+
+- Open an issue at [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
+- Include your branch name (e.g., `beta/endless-mode`) in the report
+- Describe what you expected vs. what actually happened
+- Include relevant worker logs if available (`npm run worker:logs`)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Customize Claude-Mem settings including observation limits and context injection behavior.
+  </Card>
+  <Card title="Architecture Overview" icon="diagram-project" href="/architecture/overview">
+    Understand how the hooks, worker service, and database work together under the hood.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting">
+    Common issues and solutions for both stable and beta channels.
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
+    Review how Claude-Mem's automatic operation works if you're new to the plugin.
+  </Card>
+</CardGroup>

@@ -1,94 +1,631 @@
 ---
-title: 'Development'
-description: 'Preview changes locally to update your docs'
+title: "Development"
+description: "Build Claude Mem from source, run tests, manage the worker service, and contribute to the project."
 ---
 
-<Info>
-  **Prerequisites**:
-  - Node.js version 19 or higher
-  - A docs repository with a `docs.json` file
-</Info>
+## Prerequisites
 
-Follow these steps to install and run Mintlify on your operating system.
+<CardGroup cols={3}>
+  <Card title="Node.js ≥ 18" icon="node-js">
+    Required to build and run the project. Check with `node --version`.
+  </Card>
+  <Card title="Bun ≥ 1.0" icon="bolt">
+    Manages the worker service and runs tests. Auto-installed if missing.
+  </Card>
+  <Card title="Git" icon="code-branch">
+    Required to clone and contribute to the repository.
+  </Card>
+</CardGroup>
+
+---
+
+## Building from source
 
 <Steps>
-<Step title="Install the Mintlify CLI">
+  <Step title="Clone the repository">
 
-```bash
-npm i -g mint
-```
-</Step>
+    ```bash
+    git clone https://github.com/thedotmack/claude-mem.git
+    cd claude-mem
+    ```
+  </Step>
+  <Step title="Install dependencies">
 
-<Step title="Preview locally">
+    ```bash
+    npm install
+    ```
+  </Step>
+  <Step title="Build all components">
 
-Navigate to your docs directory where your `docs.json` file is located, and run the following command:
-
-```bash
-mint dev
-```
-
-A local preview of your documentation will be available at `http://localhost:3000`.
-
-</Step>
+    ```bash
+    npm run build
+    ```
+  </Step>
 </Steps>
 
-## Custom ports
+### What the build produces
 
-By default, Mintlify uses port 3000. You can customize the port Mintlify runs on by using the `--port` flag. For example, to run Mintlify on port 3333, use this command:
+The build uses esbuild to compile TypeScript into several output formats:
+
+| Output | Format | Location |
+|--------|--------|----------|
+| Hook scripts (`*-hook.js`, `smart-install.js`) | ESM | `plugin/scripts/` |
+| Worker service | CJS | `plugin/scripts/worker-service.cjs` |
+| MCP search server | CJS | `plugin/scripts/mcp-server.cjs` |
+| Web viewer UI | Self-contained HTML | `plugin/ui/viewer.html` |
+
+### Build commands
+
+<CodeGroup>
+
+```bash Build everything
+npm run build
+```
+
+```bash Build and sync to installed plugin
+npm run build-and-sync
+```
+
+```bash Build only hooks
+npm run build:hooks
+```
+
+</CodeGroup>
+
+`build-and-sync` is the standard development command — it builds, syncs to the marketplace install location, and restarts the worker in one step.
+
+---
+
+## Source layout
+
+```
+src/
+├── hooks/           # Hook entry points and logic
+├── services/        # Worker service, database, and sync
+│   └── sqlite/      # SQLite schema, migrations, search
+├── servers/         # MCP search server
+├── sdk/             # Claude Agent SDK integration
+├── shared/          # Shared utilities
+├── ui/
+│   └── viewer/      # React web viewer components
+└── utils/           # General utilities
+```
+
+---
+
+## Development workflow
+
+<Steps>
+  <Step title="Make changes">
+    Edit TypeScript source files in `src/`.
+  </Step>
+  <Step title="Build and sync">
+
+    ```bash
+    npm run build-and-sync
+    ```
+
+    This builds, copies to the installed plugin, and restarts the worker.
+  </Step>
+  <Step title="Test manually">
+    Start a Claude Code session to test the feature end-to-end, or run hooks directly (see [Manual hook testing](#manual-hook-testing) below).
+  </Step>
+  <Step title="Check logs">
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Step>
+  <Step title="Iterate">
+    Repeat until the feature works as expected.
+  </Step>
+</Steps>
+
+---
+
+## Running tests
+
+Claude Mem uses Bun's built-in test runner. Tests are organized by component.
+
+### Test commands
+
+<CodeGroup>
+
+```bash Run all tests
+npm test
+```
+
+```bash SQLite and database tests
+npm run test:sqlite
+```
+
+```bash Agent processing tests
+npm run test:agents
+```
+
+```bash Search tests
+npm run test:search
+```
+
+```bash Context injection tests
+npm run test:context
+```
+
+```bash Infrastructure tests
+npm run test:infra
+```
+
+```bash Server tests
+npm run test:server
+```
+
+</CodeGroup>
+
+### Testing philosophy
+
+Claude Mem prioritizes manual and integration testing over traditional unit tests, because:
+
+- Hook behavior depends on Claude Code's runtime environment
+- SDK interactions require real API calls
+- Integration issues that unit tests miss are common at system boundaries
+
+The preferred testing approach is:
+
+1. Build and sync changes
+2. Test in a real Claude Code session
+3. Inspect the database to verify data correctness
+4. Monitor worker logs
+
+### Manual hook testing
+
+Run hooks directly with test input to verify behavior without starting a full Claude Code session:
 
 ```bash
-mint dev --port 3333
+# Test context hook (SessionStart)
+node plugin/scripts/bun-runner.js plugin/scripts/worker-service.cjs hook claude-code context
+
+# Test session-init hook (UserPromptSubmit)
+node plugin/scripts/bun-runner.js plugin/scripts/worker-service.cjs hook claude-code session-init
+
+# Test observation hook (PostToolUse)
+node plugin/scripts/bun-runner.js plugin/scripts/worker-service.cjs hook claude-code observation
 ```
 
-If you attempt to run Mintlify on a port that's already in use, it will use the next available port:
-
-```md
-Port 3000 is already in use. Trying 3001 instead.
-```
-
-## Mintlify versions
-
-Please note that each CLI release is associated with a specific version of Mintlify. If your local preview does not align with the production version, please update the CLI:
+### Health checks
 
 ```bash
-npm mint update
+# Worker status
+npm run worker:status
+
+# Queue inspection
+curl http://localhost:37777/api/pending-queue
+
+# Database integrity
+sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 ```
 
-## Validating links
-
-The CLI can assist with validating links in your documentation. To identify any broken links, use the following command:
+### Data verification
 
 ```bash
-mint broken-links
+# Check recent observations
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT id, tool_name, created_at
+  FROM observations
+  ORDER BY created_at_epoch DESC
+  LIMIT 10;
+"
+
+# Check summaries
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT id, request, completed
+  FROM session_summaries
+  ORDER BY created_at_epoch DESC
+  LIMIT 5;
+"
 ```
 
-## Deployment
+---
 
-If the deployment is successful, you should see the following:
+## Worker management commands
 
-<Frame>
-  <img src="/images/checks-passed.png" alt="Screenshot of a deployment confirmation message that says All checks have passed." style={{ borderRadius: '0.5rem' }} />
-</Frame>
+The worker service runs as a background Bun process on port `37777`.
 
-## Code formatting
+<CodeGroup>
 
-We suggest using extensions on your IDE to recognize and format MDX. If you're a VSCode user, consider the [MDX VSCode extension](https://marketplace.visualstudio.com/items?itemName=unifiedjs.vscode-mdx) for syntax highlighting, and [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode) for code formatting.
+```bash Start
+npm run worker:start
+```
 
-## Troubleshooting
+```bash Stop
+npm run worker:stop
+```
+
+```bash Restart
+npm run worker:restart
+```
+
+```bash Check status
+npm run worker:status
+```
+
+```bash View logs
+npm run worker:logs
+```
+
+</CodeGroup>
+
+### Queue management
+
+```bash
+# Check pending queue status
+npm run queue
+
+# Process pending queue automatically
+npm run queue:process
+
+# Clear failed queue entries
+npm run queue:clear
+```
+
+---
+
+## Viewer UI development
+
+The web viewer is a React application built into a self-contained `viewer.html` bundle.
+
+**Source location**: `src/ui/viewer/`
+
+```
+src/ui/viewer/
+├── index.tsx              # Entry point
+├── App.tsx                # Root component
+├── components/
+│   ├── Header.tsx
+│   ├── Sidebar.tsx
+│   ├── Feed.tsx
+│   └── cards/
+│       ├── ObservationCard.tsx
+│       ├── PromptCard.tsx
+│       ├── SummaryCard.tsx
+│       └── SkeletonCard.tsx
+├── hooks/
+│   ├── useSSE.ts          # Server-Sent Events
+│   ├── usePagination.ts   # Infinite scroll
+│   ├── useSettings.ts     # Settings persistence
+│   └── useStats.ts        # Database statistics
+└── utils/
+    ├── constants.ts
+    ├── formatters.ts
+    └── merge.ts
+```
+
+<Warning>
+Hot reload is not supported. Every change requires a full rebuild and worker restart before you can see updates in the browser.
+</Warning>
+
+**Viewer update workflow:**
+
+```bash
+npm run build
+npm run sync-marketplace
+npm run worker:restart
+# Refresh browser at http://localhost:37777
+```
+
+### Adding a new card type
+
+<Steps>
+  <Step title="Create the component">
+
+    ```tsx
+    // src/ui/viewer/components/cards/YourCard.tsx
+    import React from 'react';
+
+    export interface YourCardProps {
+      // define your data structure
+    }
+
+    export const YourCard: React.FC<YourCardProps> = (props) => {
+      return (
+        <div className="card">
+          {/* your UI */}
+        </div>
+      );
+    };
+    ```
+  </Step>
+  <Step title="Register in Feed.tsx">
+
+    ```tsx
+    import { YourCard } from './cards/YourCard';
+
+    // In render logic:
+    {item.type === 'your_type' && <YourCard {...item} />}
+    ```
+  </Step>
+  <Step title="Update types if needed">
+    Add your data shape to `src/ui/viewer/types.ts`.
+  </Step>
+  <Step title="Rebuild and test">
+
+    ```bash
+    npm run build-and-sync
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Adding new features
+
+### Adding a new hook
+
+<Steps>
+  <Step title="Create the hook implementation">
+
+    ```typescript
+    // src/hooks/your-hook.ts
+    import { readStdin } from '../shared/stdin';
+
+    async function main() {
+      const input = await readStdin();
+
+      // Hook implementation
+      const result = {
+        hookSpecificOutput: 'optional output'
+      };
+
+      console.log(JSON.stringify(result));
+    }
+
+    main().catch(console.error);
+    ```
+
+    <Note>
+    As of v4.3.1, hooks are self-contained files. The shebang line is added automatically by esbuild during the build.
+    </Note>
+  </Step>
+  <Step title="Register in hooks.json">
+
+    ```json
+    {
+      "YourHook": [{
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/your-hook.js",
+          "timeout": 120
+        }]
+      }]
+    }
+    ```
+  </Step>
+  <Step title="Rebuild">
+
+    ```bash
+    npm run build
+    ```
+  </Step>
+</Steps>
+
+### Modifying the database schema
+
+<Steps>
+  <Step title="Add a migration">
+
+    ```typescript
+    // src/services/sqlite/migrations.ts
+    export const migration011: Migration = {
+      version: 11,
+      up: (db: Database) => {
+        db.run(`
+          ALTER TABLE observations ADD COLUMN new_field TEXT;
+        `);
+      }
+    };
+    ```
+  </Step>
+  <Step title="Update types">
+
+    ```typescript
+    // src/services/sqlite/types.ts
+    export interface Observation {
+      // ... existing fields
+      new_field?: string;
+    }
+    ```
+  </Step>
+  <Step title="Update database methods">
+
+    ```typescript
+    // src/services/sqlite/SessionStore.ts
+    createObservation(obs: Observation) {
+      // include new_field in INSERT
+    }
+    ```
+  </Step>
+  <Step title="Test with a database backup">
+
+    ```bash
+    cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+    npm test
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Debugging
+
+### Enable debug logging
+
+```bash
+export DEBUG=claude-mem:*
+npm run worker:restart
+npm run worker:logs
+```
+
+### Inspect the database
+
+```bash
+sqlite3 ~/.claude-mem/claude-mem.db
+
+# View schema
+.schema observations
+
+# Recent activity
+SELECT created_at, tool_name FROM observations ORDER BY created_at DESC LIMIT 10;
+
+# Table counts
+SELECT 'sessions', COUNT(*) FROM sdk_sessions
+UNION ALL SELECT 'observations', COUNT(*) FROM observations
+UNION ALL SELECT 'summaries', COUNT(*) FROM session_summaries;
+```
+
+### Trace observations by session
+
+```bash
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT correlation_id, tool_name, created_at
+  FROM observations
+  WHERE session_id = 'YOUR_SESSION_ID'
+  ORDER BY created_at;
+"
+```
+
+---
+
+## Code style
 
 <AccordionGroup>
-  <Accordion title='Error: Could not load the "sharp" module using the darwin-arm64 runtime'>
-
-    This may be due to an outdated version of node. Try the following:
-    1. Remove the currently-installed version of the CLI: `npm remove -g mint`
-    2. Upgrade to Node v19 or higher.
-    3. Reinstall the CLI: `npm i -g mint`
+  <Accordion title="TypeScript guidelines">
+    - Use strict mode
+    - Define interfaces for all data structures
+    - Use `async`/`await` for asynchronous code
+    - Handle errors explicitly with try/catch
+    - Add JSDoc comments for public APIs
   </Accordion>
+  <Accordion title="Formatting">
+    - 2-space indentation
+    - Single quotes for strings
+    - Trailing commas in objects and arrays
+    - Follow the existing code style in the file you're editing
+  </Accordion>
+  <Accordion title="Example: well-typed function">
 
-  <Accordion title="Issue: Encountering an unknown error">
-  
-    Solution: Go to the root of your device and delete the `~/.mintlify` folder. Then run `mint dev` again.
+    ```typescript
+    /**
+     * Create a new observation in the database
+     */
+    export async function createObservation(
+      obs: Observation
+    ): Promise<number> {
+      try {
+        const result = await db.insert('observations', {
+          session_id: obs.session_id,
+          tool_name: obs.tool_name,
+        });
+        return result.id;
+      } catch (error) {
+        logger.error('Failed to create observation', error);
+        throw error;
+      }
+    }
+    ```
   </Accordion>
 </AccordionGroup>
 
-Curious about what changed in the latest CLI version? Check out the [CLI changelog](https://www.npmjs.com/package/mintlify?activeTab=versions).
+---
+
+## Bug reports
+
+Generate a bug report with system diagnostics:
+
+```bash
+npm run bug-report
+```
+
+This collects worker status, recent logs, database statistics, and environment information to include when filing a GitHub issue.
+
+---
+
+## Contributing
+
+### Workflow
+
+<Steps>
+  <Step title="Fork and branch">
+
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+  </Step>
+  <Step title="Make changes">
+    Edit source files in `src/`. Follow the code style guidelines above.
+  </Step>
+  <Step title="Test">
+    Run `npm test` and verify your feature manually in a Claude Code session.
+  </Step>
+  <Step title="Update documentation">
+    Update relevant MDX files in `docs/public/` if your change affects user-facing behavior.
+  </Step>
+  <Step title="Commit and push">
+
+    ```bash
+    git commit -m 'feat: add your feature'
+    git push origin feature/your-feature-name
+    ```
+  </Step>
+  <Step title="Open a pull request">
+    Open a PR against `main`. Include a clear description of what changed and why.
+  </Step>
+</Steps>
+
+### Pull request checklist
+
+- Clear title describing what the PR does
+- Description explaining why the change is needed
+- Tests for new functionality
+- Documentation updated where applicable
+- Entry added to `CHANGELOG.md`
+- TypeScript compiles without errors (`npx tsc --noEmit`)
+
+---
+
+## Releasing
+
+<Steps>
+  <Step title="Bump the version">
+    Update the version in:
+    - `package.json`
+    - `plugin/.claude-plugin/plugin.json`
+    - `CLAUDE.md` header
+    - `README.md` version badge
+  </Step>
+  <Step title="Build and sync">
+
+    ```bash
+    npm run build && npm run sync-marketplace
+    ```
+  </Step>
+  <Step title="Commit and tag">
+
+    ```bash
+    git add .
+    git commit -m "chore: release v4.3.2"
+    git tag v4.3.2
+    git push origin main --tags
+    ```
+  </Step>
+  <Step title="Publish to npm">
+
+    ```bash
+    npm run release
+    ```
+
+    The `release` script runs tests, builds all components, and publishes to the npm registry.
+  </Step>
+</Steps>
+
+<Note>
+The changelog is generated automatically — do not edit `CHANGELOG.md` manually.
+</Note>

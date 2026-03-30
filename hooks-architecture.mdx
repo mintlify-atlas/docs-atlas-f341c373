@@ -1,0 +1,558 @@
+---
+title: "Hooks Architecture"
+description: "How Claude Mem uses Claude Code lifecycle hooks to observe sessions, capture tool output, and inject memory — without touching the main session."
+---
+
+# Hooks Architecture
+
+## Core principle
+
+**Observe the main Claude Code session from the outside, process observations in the background, inject context at the right time.**
+
+Claude Mem is fundamentally a **hook-driven system**. Every piece of functionality happens in response to lifecycle events fired by Claude Code. The memory system never interrupts or modifies Claude Code's behavior — it observes from the outside and provides value through lifecycle hooks.
+
+```plaintext
+┌─────────────────────────────────────────────────────────┐
+│              CLAUDE CODE SESSION                         │
+│  (Main session — user interacting with Claude)          │
+│                                                          │
+│  SessionStart → UserPromptSubmit → Tool Use → Stop      │
+│     ↓ ↓ ↓            ↓               ↓          ↓       │
+│  [3 Hooks]        [Hook]          [Hook]     [Hook]     │
+└─────────────────────────────────────────────────────────┘
+     ↓ ↓ ↓             ↓               ↓          ↓
+┌─────────────────────────────────────────────────────────┐
+│                  CLAUDE MEM SYSTEM                       │
+│                                                          │
+│  Smart      Worker      Context    New        Obs       │
+│  Install    Start       Inject     Session    Capture   │
+└─────────────────────────────────────────────────────────┘
+```
+
+<Note>
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
+</Note>
+
+---
+
+## Why hooks?
+
+### Architectural constraints
+
+Claude Mem had several non-negotiable requirements:
+
+1. **Can't modify Claude Code** — it's a closed-source binary
+2. **Must be fast** — hooks can't slow down the main session
+3. **Must be reliable** — a failure must not break Claude Code
+4. **Must be portable** — works on any project without per-project configuration
+
+Claude Code's hook system provides exactly what's needed:
+
+<CardGroup cols={2}>
+  <Card title="Lifecycle events" icon="clock">
+    SessionStart, UserPromptSubmit, PostToolUse, Stop, and SessionEnd cover the full session lifecycle.
+  </Card>
+  <Card title="Non-blocking" icon="forward">
+    Hooks run independently and don't block Claude from continuing work.
+  </Card>
+  <Card title="Context injection" icon="upload">
+    SessionStart hooks can add context to Claude's initial system prompt via `additionalContext`.
+  </Card>
+  <Card title="Tool observation" icon="eye">
+    PostToolUse receives all tool names, inputs, and outputs — the raw material for memory.
+  </Card>
+</CardGroup>
+
+---
+
+## How hooks.json is structured
+
+All hook registrations live in a single file at `plugin/hooks/hooks.json`. Claude Code reads this file at startup and registers the commands to run at each lifecycle event.
+
+```json
+{
+  "description": "Claude-mem memory system hooks",
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|clear|compact",
+      "hooks": [
+        { "type": "command", "command": "...", "timeout": 300 },
+        { "type": "command", "command": "...", "timeout": 60 },
+        { "type": "command", "command": "...", "timeout": 60 }
+      ]
+    }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "...", "timeout": 60 }] }],
+    "PostToolUse":     [{ "matcher": "*", "hooks": [{ "type": "command", "command": "...", "timeout": 120 }] }],
+    "Stop":            [{ "hooks": [{ "type": "command", "command": "...", "timeout": 120 }] }],
+    "SessionEnd":      [{ "hooks": [{ "type": "command", "command": "...", "timeout": 5 }] }]
+  }
+}
+```
+
+Key fields:
+
+| Field | Purpose |
+|---|---|
+| `matcher` | Regex or glob filter on the event subtype. `"startup\|clear\|compact"` means SessionStart fires only for those sources. `"*"` matches any tool name in PostToolUse. Omitting `matcher` means the hook fires unconditionally. |
+| `type` | Always `"command"` for shell commands. |
+| `command` | Shell command to execute. Receives hook data via stdin. |
+| `timeout` | Maximum seconds before Claude Code kills the hook process. |
+
+### Hook chaining in SessionStart
+
+SessionStart runs **three hooks in sequence** for the `startup|clear|compact` source:
+
+1. `smart-install.js` — checks and installs dependencies (up to 300s timeout for first-time npm install)
+2. `worker-service.cjs start` — ensures the Bun worker process is running (60s timeout)
+3. `worker-service.cjs hook claude-code context` — fetches and injects prior context (60s timeout)
+
+All three run before Claude Code's session becomes interactive. If any hook times out or exits with a non-blocking error code, Claude Code continues normally.
+
+---
+
+## The 5 lifecycle hooks + smart-install pre-hook
+
+### Pre-hook: smart-install (before SessionStart context)
+
+Smart install is **not a lifecycle hook** — it is a pre-hook script called via command chaining in `hooks.json` before the context hook runs.
+
+**When:** Claude Code starts with source `startup`, `clear`, or `compact`
+
+**What it does:**
+1. Checks whether dependencies need installation using a `.install-version` version marker
+2. Only runs `npm install` when necessary: first-time setup, or when `package.json` version changed
+3. Provides Windows-specific error messages for missing build tools
+4. Triggers Bun worker service startup
+
+**Version caching:**
+```typescript
+const currentVersion = getPackageVersion();
+const installedVersion = readFileSync('.install-version', 'utf-8');
+
+if (currentVersion !== installedVersion) {
+  await runNpmInstall();
+  writeFileSync('.install-version', currentVersion);
+}
+```
+
+**Source:** `scripts/smart-install.js`
+
+**v5.0.3:** Version caching reduced SessionStart time from 2–5 seconds (npm install) to ~10ms on cached runs.
+
+---
+
+### Hook 1: SessionStart — context injection
+
+**Purpose:** Inject relevant context from previous sessions into Claude's initial prompt
+
+**When:** Claude Code starts (runs after smart-install)
+
+**What it does:**
+1. Extracts the project name from the current working directory
+2. Queries SQLite for recent session summaries (last 10)
+3. Queries SQLite for recent observations (configurable via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`, default 50)
+4. Formats the results as a **progressive disclosure index** — titles and metadata, not full content
+5. Outputs to stdout as `hookSpecificOutput.additionalContext` (silently injected, not shown to user)
+
+**Output format:**
+```markdown
+# [claude-mem] recent context
+
+**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution ...
+
+### Oct 26, 2025
+
+**General**
+| ID | Time | T | Title | Tokens |
+|----|------|---|-------|--------|
+| #2586 | 12:58 AM | 🔵 | Context hook file empty | ~51 |
+
+*Use MCP search tools to access full details*
+```
+
+**Source:** `src/hooks/context-hook.ts` → `plugin/scripts/context-hook.js`
+
+---
+
+### Hook 2: UserPromptSubmit — new session
+
+**Purpose:** Initialize session tracking when the user submits a prompt
+
+**When:** Before Claude processes the user's message
+
+**What it does:**
+1. Reads the user prompt and session ID from stdin
+2. Creates a new session record in SQLite (idempotent — uses `INSERT OR IGNORE`)
+3. Saves the raw user prompt for full-text search (v4.2.0+)
+4. Starts the Bun worker service if not already running
+5. Returns immediately — non-blocking
+
+**Database operations:**
+```sql
+INSERT OR IGNORE INTO sdk_sessions (claude_session_id, project, first_user_prompt, ...)
+VALUES (?, ?, ?, ...)
+
+INSERT INTO user_prompts (session_id, prompt, prompt_number, ...)
+VALUES (?, ?, ?, ...)
+```
+
+**Output:**
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+**Source:** `src/hooks/new-hook.ts` → `plugin/scripts/new-hook.js`
+
+---
+
+### Hook 3: PostToolUse — observation capture
+
+**Purpose:** Capture tool execution data for asynchronous AI compression
+
+**When:** Immediately after any tool completes (matcher: `*`)
+
+**What it does:**
+1. Receives tool name, input, and output from stdin
+2. Checks the skip list — discards low-value tools (`TodoWrite`, `AskUserQuestion`, `ListMcpResourcesTool`, `SlashCommand`, `Skill`)
+3. Strips privacy tags (`<private>...</private>`) from input and response
+4. POSTs the observation to the worker via HTTP (fire-and-forget, 2s timeout)
+5. Returns immediately — worker handles AI compression asynchronously
+
+**What gets sent to the worker:**
+```json
+{
+  "claudeSessionId": "abc123",
+  "tool_name": "Edit",
+  "tool_input": { "file_path": "/path/to/file.ts", "old_string": "...", "new_string": "..." },
+  "tool_response": { "success": true },
+  "cwd": "/path/to/project"
+}
+```
+
+**Output:**
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+**Source:** `src/hooks/save-hook.ts` → `plugin/scripts/save-hook.js`
+
+---
+
+### Hook 4: Stop — summary generation
+
+**Purpose:** Generate an AI-powered session summary when Claude stops
+
+**When:** When Claude stops responding (user pauses or stops the session)
+
+**What it does:**
+1. Reads the transcript JSONL file to extract the last user message and last assistant message
+2. Sends a summarization request to the worker via HTTP (fire-and-forget)
+3. Worker queues summarization for the SDK agent asynchronously
+
+**Summary structure produced by the worker:**
+```xml
+<summary>
+  <request>User's original request</request>
+  <investigated>What was examined</investigated>
+  <learned>Key discoveries</learned>
+  <completed>Work finished</completed>
+  <next_steps>Remaining tasks</next_steps>
+  <files_read>
+    <file>path/to/file1.ts</file>
+  </files_read>
+  <files_modified>
+    <file>path/to/file2.ts</file>
+  </files_modified>
+  <notes>Additional context</notes>
+</summary>
+```
+
+**Source:** `src/hooks/summary-hook.ts` → `plugin/scripts/summary-hook.js`
+
+---
+
+### Hook 5: SessionEnd — cleanup
+
+**Purpose:** Mark the session as completed when it ends
+
+**When:** Claude Code session closes (not on `/clear`)
+
+**What it does:**
+1. POSTs a completion request to the worker with the session ID and reason
+2. Worker marks the session as `completed` in SQLite
+3. Worker broadcasts the session completion event to SSE clients (viewer UI)
+
+**Graceful vs. aggressive cleanup (v4.1.0+):**
+
+Before v4.1.0, SessionEnd sent a `DELETE` to the worker, immediately killing any in-progress summary generation. Since v4.1.0 the hook simply marks the session complete, allowing the worker to finish processing naturally:
+
+```typescript
+// v3: Aggressive — interrupted summaries
+await fetch(`http://localhost:37777/sessions/${sessionId}`, { method: 'DELETE' });
+
+// v4+: Graceful — worker finishes on its own schedule
+await db.run(
+  'UPDATE sdk_sessions SET completed_at = ? WHERE id = ?',
+  [Date.now(), sessionId]
+);
+```
+
+**Source:** `src/hooks/cleanup-hook.ts` → `plugin/scripts/cleanup-hook.js`
+
+---
+
+## Exit code strategy
+
+Claude Mem hooks use specific exit codes per Claude Code's hook contract:
+
+| Exit code | Meaning | When Claude Mem uses it |
+|---|---|---|
+| `0` | Success or graceful shutdown | All normal hook completions; worker/hook errors that should not surface to the user |
+| `1` | Non-blocking error | Stderr shown to user, session continues |
+| `2` | Blocking error | Stderr fed to Claude for processing; session pauses |
+
+<Tip>
+Worker and hook errors exit with code `0` by default to prevent Windows Terminal from accumulating error tab dialogs. The plugin wrapper layer handles restart logic separately.
+</Tip>
+
+---
+
+## Stdin / stdout data flow
+
+Every hook receives structured JSON from Claude Code on **stdin** and writes its response to **stdout**.
+
+### Stdin (hook receives from Claude Code)
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": { "file_path": "/src/index.ts" },
+  "tool_response": "file contents..."
+}
+```
+
+The exact fields depend on the lifecycle event. `session_id` and `cwd` are present for all events.
+
+### Stdout (hook sends back to Claude Code)
+
+For most hooks, a simple acknowledgement:
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+For SessionStart context injection, a structured output:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "# [claude-mem] recent context\n\n..."
+  }
+}
+```
+
+Any output that is **not** valid JSON is treated as plain text and may be shown in the transcript. Stderr output is logged but does not affect context injection.
+
+---
+
+## Hook timing reference
+
+| Event | Timeout | Blocking | Output handling |
+|---|---|---|---|
+| SessionStart — smart-install | 300s | No | stderr (log only) |
+| SessionStart — worker start | 60s | No | stderr (log only) |
+| SessionStart — context | 60s | No | JSON → `additionalContext` (silent) |
+| UserPromptSubmit | 60s | No | stdout → context |
+| PostToolUse | 120s | No | Transcript only |
+| Stop | 120s | No | Database (async) |
+| SessionEnd | 5s | No | Log only |
+
+---
+
+## The worker service: why hooks stay fast
+
+Hooks must return in well under a second. AI compression of a single observation takes 5–30 seconds. The solution is a queue-based architecture:
+
+```plaintext
+┌─────────────────────────────────────────────────────────┐
+│                   HOOK (Fast)                            │
+│  1. Read stdin          (< 1ms)                         │
+│  2. HTTP POST to worker (< 10ms)                        │
+│  3. Return success      (< 20ms total)                  │
+└─────────────────────────────────────────────────────────┘
+                        ↓ HTTP (fire-and-forget)
+┌─────────────────────────────────────────────────────────┐
+│                 WORKER (Slow, async)                     │
+│  1. Receive observation via HTTP                        │
+│  2. Queue for SDK agent processing                      │
+│  3. SDK agent calls Claude API (5–30s)                  │
+│  4. Parse XML, store compressed observation             │
+└─────────────────────────────────────────────────────────┘
+```
+
+The worker is a long-running Express.js server on port 37777, managed by Bun.
+
+---
+
+## Design patterns
+
+### Pattern 1: Fire-and-forget hooks
+
+```typescript
+// ❌ Bad: hook waits for processing
+export async function saveHook(stdin: HookInput) {
+  const observation = parseInput(stdin);
+  await processObservation(observation); // blocks
+  return success();
+}
+
+// ✅ Good: hook enqueues and returns
+export async function saveHook(stdin: HookInput) {
+  const observation = parseInput(stdin);
+  await enqueueObservation(observation); // fast HTTP POST
+  return success();                      // immediate
+}
+```
+
+### Pattern 2: Queue-based decoupling
+
+```plaintext
+Hook (capture) → HTTP POST → Worker queue → SDK agent (process)
+```
+
+Captures and processing are independent. Worker failure doesn't affect hooks. Retry logic lives in the worker.
+
+### Pattern 3: Graceful degradation
+
+```typescript
+try {
+  await captureObservation();
+} catch (error) {
+  console.error('Memory capture failed:', error);
+  // Exit 0 — don't break Claude Code
+  return { continue: true, suppressOutput: true };
+}
+```
+
+Failure modes:
+- Database locked → skip observation, log error
+- Worker crashed → auto-restart via Bun
+- Network issue → retry with exponential backoff
+- Disk full → warn user, disable memory
+
+### Pattern 4: Progressive disclosure context
+
+Context injection uses an index format, not full observation text:
+
+```
+❌ Old: Load 50 observations upfront    → 8,500 tokens
+✅ New: Show index of 50 observations   →   800 tokens
+        Agent fetches 2–3 relevant ones →   300 tokens
+        Total: 1,100 tokens (87% savings)
+```
+
+---
+
+## Debugging hooks
+
+### Debug mode
+
+```bash
+claude --debug
+```
+
+Example output:
+```
+[DEBUG] Executing hooks for PostToolUse:Write
+[DEBUG] Found 1 hook commands to execute
+[DEBUG] Executing hook command: .../save-hook.js with timeout 60000ms
+[DEBUG] Hook command completed with status 0: {"continue":true,"suppressOutput":true}
+```
+
+### Testing hooks manually
+
+```bash
+# Test context hook
+echo '{
+  "session_id": "test123",
+  "cwd": "/Users/alex/projects/my-app",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}' | node plugin/scripts/context-hook.js
+
+# Test save hook
+echo '{
+  "session_id": "test123",
+  "tool_name": "Edit",
+  "tool_input": {"file_path": "test.ts"},
+  "tool_response": {"success": true}
+}' | node plugin/scripts/save-hook.js
+```
+
+### Common issues
+
+<AccordionGroup>
+  <Accordion title="Hook not executing">
+    **Symptoms:** Hook command never runs.
+
+    1. Open `/hooks` in Claude Code — is the hook registered?
+    2. Check the `matcher` pattern (case-sensitive regex).
+    3. Test the command manually: `echo '{}' | node save-hook.js`
+    4. Verify file permissions (executable bit set?).
+  </Accordion>
+
+  <Accordion title="Hook times out">
+    **Symptoms:** Hook execution exceeds timeout, Claude Code kills it.
+
+    1. Check the `timeout` setting (default 60s, smart-install has 300s).
+    2. Identify the slow operation — is it a database call or network request?
+    3. Move slow operations to the worker process.
+    4. Increase `timeout` in `hooks.json` if necessary.
+  </Accordion>
+
+  <Accordion title="Context not injecting">
+    **Symptoms:** SessionStart hook runs but prior context is missing.
+
+    1. Check stdout — must be valid JSON, no extra output.
+    2. Verify no stderr output is mixed into stdout (npm install logs polluted this in v4.3.0; fixed in v4.3.1).
+    3. Check exit code (must be 0).
+    4. Confirm `hookSpecificOutput.additionalContext` is present in the JSON.
+  </Accordion>
+
+  <Accordion title="Observations not captured">
+    **Symptoms:** PostToolUse hook runs but no observations appear in the viewer.
+
+    1. Check the observation queue: `sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM observation_queue"`
+    2. Verify the session exists: `SELECT * FROM sdk_sessions`
+    3. Check worker status: `npm run worker:status`
+    4. View worker logs: `npm run worker:logs`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Hook performance measurements
+
+| Hook | Average | p95 | p99 |
+|---|---|---|---|
+| SessionStart — smart-install (cached) | 10ms | 20ms | 40ms |
+| SessionStart — smart-install (first run) | 2,500ms | 5,000ms | 8,000ms |
+| SessionStart — context | 45ms | 120ms | 250ms |
+| UserPromptSubmit | 12ms | 25ms | 50ms |
+| PostToolUse | 8ms | 15ms | 30ms |
+| SessionEnd | 5ms | 10ms | 20ms |
+
+Smart-install is slow only on first run or after a version change. The `.install-version` marker (v5.0.3) ensures it is skipped on all subsequent startups.
+
+---
+
+## Key takeaways
+
+1. **Hooks are interfaces** — they define clean boundaries between Claude Code and the memory system.
+2. **Non-blocking is critical** — hooks must return fast; the worker does the heavy lifting.
+3. **Graceful degradation** — the memory system can fail silently without breaking Claude Code.
+4. **Queue-based decoupling** — capture and processing are independent pipelines.
+5. **Progressive disclosure** — context injection uses an index-first approach to minimize token cost.
+6. **Single responsibility** — each hook has one clear purpose.

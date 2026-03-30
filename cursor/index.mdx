@@ -1,0 +1,471 @@
+---
+title: Cursor Integration
+description: Persistent AI memory for Cursor IDE — free tier options available, works with or without Claude Code
+---
+
+Every Cursor session starts fresh — your AI does not remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
+
+<CardGroup cols={2}>
+  <Card title="Free to Start" icon="dollar-sign">
+    Works with Gemini's free tier (1,500 req/day) — no subscription required
+  </Card>
+  <Card title="Automatic Capture" icon="bolt">
+    MCP tools, shell commands, and file edits logged without effort
+  </Card>
+  <Card title="Smart Context" icon="brain">
+    Relevant history injected into every chat session via Cursor Rules
+  </Card>
+  <Card title="Works Everywhere" icon="check">
+    With or without a Claude Code subscription
+  </Card>
+</CardGroup>
+
+<Info>
+**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+</Info>
+
+## How It Works
+
+Claude-mem integrates with Cursor through native hooks:
+
+```plaintext
+Cursor Agent
+  │ Events (MCP, Shell, File Edits, Prompts)
+  ▼
+Cursor Hooks System
+  ├── beforeSubmitPrompt
+  ├── afterMCPExecution
+  ├── afterShellExecution
+  ├── afterFileEdit
+  └── stop
+  │ HTTP Requests
+  ▼
+Hook Scripts (Bash / PowerShell)
+  ├── session-init.sh
+  ├── context-inject.sh
+  ├── save-observation.sh
+  ├── save-file-edit.sh
+  └── session-summary.sh
+  │ HTTP API Calls
+  ▼
+Claude-Mem Worker Service (Port 37777)
+  ├── /api/sessions/init
+  ├── /api/sessions/observations
+  ├── /api/sessions/summarize
+  └── /api/context/inject
+  │ Database Operations
+  ▼
+SQLite + Chroma Vector DB
+```
+
+1. **Session hooks** capture tool usage, file edits, and shell commands
+2. **AI extraction** compresses observations into semantic summaries
+3. **Context injection** loads relevant history into each new session via `.cursor/rules/claude-mem-context.mdc`
+4. **Memory viewer** at `http://localhost:37777` shows your knowledge base
+
+## Prerequisites
+
+<AccordionGroup>
+  <Accordion title="macOS">
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - Cursor IDE
+    - `jq` and `curl`: `brew install jq curl`
+  </Accordion>
+  <Accordion title="Linux">
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - Cursor IDE
+    - `jq` and `curl`: `apt install jq curl` or `dnf install jq curl`
+  </Accordion>
+  <Accordion title="Windows">
+    - [Bun](https://bun.sh): `powershell -c "irm bun.sh/install.ps1 | iex"`
+    - Cursor IDE
+    - PowerShell 5.1+ (included in Windows 10/11)
+    - Git for Windows
+  </Accordion>
+</AccordionGroup>
+
+## Installation Paths
+
+Choose the installation method that fits your setup:
+
+<Tabs>
+  <Tab title="Cursor-Only (No Claude Code)">
+    If you are using Cursor without a Claude Code subscription, follow this path.
+
+    <Steps>
+      <Step title="Clone and build">
+        ```bash
+        git clone https://github.com/thedotmack/claude-mem.git
+        cd claude-mem && bun install && bun run build
+        ```
+      </Step>
+      <Step title="Configure your AI provider">
+        Since you do not have Claude Code, you need to configure an AI provider for claude-mem's summarization engine.
+
+        **Option A: Gemini (Recommended — Free Tier)**
+
+        Gemini offers 1,500 free requests per day, which is plenty for typical individual use.
+
+        ```bash
+        mkdir -p ~/.claude-mem
+        cat > ~/.claude-mem/settings.json << 'EOF'
+        {
+          "CLAUDE_MEM_PROVIDER": "gemini",
+          "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY",
+          "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+          "CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED": true
+        }
+        EOF
+        ```
+
+        Get your free API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+        **Option B: OpenRouter (100+ Models)**
+
+        ```bash
+        mkdir -p ~/.claude-mem
+        cat > ~/.claude-mem/settings.json << 'EOF'
+        {
+          "CLAUDE_MEM_PROVIDER": "openrouter",
+          "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+        }
+        EOF
+        ```
+
+        Free models available on OpenRouter include `google/gemini-2.0-flash-exp:free` and `xiaomi/mimo-v2-flash:free`.
+
+        **Option C: Claude API (API Credits Without Claude Code)**
+
+        ```bash
+        mkdir -p ~/.claude-mem
+        cat > ~/.claude-mem/settings.json << 'EOF'
+        {
+          "CLAUDE_MEM_PROVIDER": "claude",
+          "ANTHROPIC_API_KEY": "YOUR_ANTHROPIC_API_KEY"
+        }
+        EOF
+        ```
+      </Step>
+      <Step title="Run the interactive setup wizard">
+        ```bash
+        bun run cursor:setup
+        ```
+
+        The wizard detects that you do not have Claude Code, helps you choose and configure a free AI provider, installs hooks automatically, and starts the worker service.
+      </Step>
+      <Step title="Verify installation">
+        ```bash
+        bun run cursor:status
+        bun run worker:status
+        ```
+
+        Then open `http://localhost:37777` in your browser.
+      </Step>
+      <Step title="Restart Cursor">
+        Restart Cursor IDE to load the new hooks. Start a coding session — context will begin being captured automatically.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Claude Code Users">
+    If you have Claude Code installed, the plugin uses Claude's SDK by default.
+
+    <Steps>
+      <Step title="Install the plugin">
+        ```bash
+        /plugin marketplace add thedotmack/claude-mem
+        /plugin install claude-mem
+        ```
+      </Step>
+      <Step title="Install Cursor hooks">
+        ```bash
+        # Install for all projects (recommended)
+        claude-mem cursor install user
+
+        # Or for the current project only
+        claude-mem cursor install
+        ```
+      </Step>
+      <Step title="Restart Cursor">
+        Restart Cursor IDE to load the hooks.
+      </Step>
+      <Step title="Verify">
+        ```bash
+        bun run cursor:status
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Windows">
+    Windows users get full support via PowerShell scripts. The installer automatically detects Windows and installs the appropriate scripts.
+
+    <Steps>
+      <Step title="Enable script execution (if needed)">
+        ```powershell
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+        ```
+      </Step>
+      <Step title="Clone, build, and configure">
+        ```powershell
+        git clone https://github.com/thedotmack/claude-mem.git
+        cd claude-mem
+        bun install
+        bun run build
+
+        # Configure provider (Gemini example)
+        $settingsDir = "$env:USERPROFILE\.claude-mem"
+        New-Item -ItemType Directory -Force -Path $settingsDir
+
+        @"
+        {
+          "CLAUDE_MEM_PROVIDER": "gemini",
+          "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+        }
+        "@ | Out-File -FilePath "$settingsDir\settings.json" -Encoding UTF8
+        ```
+      </Step>
+      <Step title="Run the interactive setup">
+        ```powershell
+        bun run cursor:setup
+        ```
+      </Step>
+      <Step title="Start the worker and verify">
+        ```powershell
+        bun run worker:start
+        bun run cursor:status
+        ```
+      </Step>
+    </Steps>
+
+    **What gets installed on Windows:**
+
+    | Script | Purpose |
+    |--------|---------|
+    | `common.ps1` | Shared utilities |
+    | `session-init.ps1` | Initialize session on prompt |
+    | `context-inject.ps1` | Inject memory context |
+    | `save-observation.ps1` | Capture MCP/shell usage |
+    | `save-file-edit.ps1` | Capture file edits |
+    | `session-summary.ps1` | Generate summary on stop |
+
+    Hooks are configured to invoke PowerShell with `-ExecutionPolicy Bypass` so scripts run without additional configuration.
+  </Tab>
+</Tabs>
+
+## npm Scripts Reference
+
+All commands are run from the `claude-mem` repository directory:
+
+| Command | Description |
+|---------|-------------|
+| `bun run cursor:setup` | Interactive setup wizard — configures provider and installs hooks |
+| `bun run cursor:install` | Install Cursor hooks for the current project |
+| `bun run cursor:install -- user` | Install Cursor hooks for all projects (user-level) |
+| `bun run cursor:uninstall` | Remove Cursor hooks |
+| `bun run cursor:status` | Check hook installation status |
+| `bun run worker:start` | Start the worker service in the background |
+| `bun run worker:stop` | Stop the worker service |
+| `bun run worker:restart` | Restart the worker service |
+| `bun run worker:status` | Check worker status |
+| `bun run worker:logs` | View worker logs (last 50 lines) |
+
+## Hook Mappings
+
+The `hooks.json` file installed in `.cursor/` maps Cursor events to bash (or PowerShell) scripts:
+
+| Cursor Hook | Script | Purpose |
+|-------------|--------|---------|
+| `beforeSubmitPrompt` | `session-init.sh` | Initialize claude-mem session using `conversation_id` |
+| `beforeSubmitPrompt` | `context-inject.sh` | Ensure worker is running; refresh context file |
+| `afterMCPExecution` | `save-observation.sh` | Capture MCP tool usage |
+| `afterShellExecution` | `save-observation.sh` | Capture shell command execution |
+| `afterFileEdit` | `save-file-edit.sh` | Capture file edits as `write_file` observations |
+| `stop` | `session-summary.sh` | Generate summary + update context file for next session |
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      { "command": "./cursor-hooks/session-init.sh" },
+      { "command": "./cursor-hooks/context-inject.sh" }
+    ],
+    "afterMCPExecution": [
+      { "command": "./cursor-hooks/save-observation.sh" }
+    ],
+    "afterShellExecution": [
+      { "command": "./cursor-hooks/save-observation.sh" }
+    ],
+    "afterFileEdit": [
+      { "command": "./cursor-hooks/save-file-edit.sh" }
+    ],
+    "stop": [
+      { "command": "./cursor-hooks/session-summary.sh" }
+    ]
+  }
+}
+```
+
+## Context Injection
+
+Context is automatically injected via Cursor's **Rules** system — no manual steps required after installation.
+
+### How the Context File Works
+
+The file at `.cursor/rules/claude-mem-context.mdc` has `alwaysApply: true` set in its frontmatter, so Cursor includes it in every chat session automatically.
+
+```markdown
+---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+[Your context from claude-mem appears here]
+
+---
+*Updated after last session.*
+```
+
+### When Context Updates
+
+Context is refreshed at three points per session for maximum freshness:
+
+<Steps>
+  <Step title="Before each prompt (context-inject.sh)">
+    When you submit a prompt, `context-inject.sh` runs. It fetches the latest context from `/api/context/inject` and rewrites `.cursor/rules/claude-mem-context.mdc`. Cursor reads this file before passing it to the LLM.
+  </Step>
+  <Step title="After summary completes (worker auto-update)">
+    Immediately after a summary is saved to the database, the worker checks if the project is registered for Cursor and writes the updated context file automatically — no hook involved.
+  </Step>
+  <Step title="After session ends (session-summary.sh)">
+    When the agent loop ends, the `stop` hook runs `session-summary.sh`, which generates a session summary and then writes a fresh context file as a fallback to ensure nothing was missed.
+  </Step>
+</Steps>
+
+### Data Mapping
+
+| Cursor Field | Claude-Mem Field | Notes |
+|-------------|------------------|-------|
+| `conversation_id` | `contentSessionId` | Stable across turns, used as primary session identifier |
+| `generation_id` | (fallback) | Used if `conversation_id` is unavailable |
+| `workspace_roots[0]` | Project name | Basename of workspace root directory |
+
+### Additional Context Access Methods
+
+<CardGroup cols={2}>
+  <Card title="MCP Tools" icon="tool">
+    Configure claude-mem's MCP server in Cursor for `search(query, project, limit)`, `timeline(anchor, depth_before, depth_after)`, and `get_observations(ids)` tools.
+  </Card>
+  <Card title="Web Viewer" icon="eye">
+    Browse your full memory at `http://localhost:37777` — search, filter by project, view timelines.
+  </Card>
+</CardGroup>
+
+## Provider Comparison
+
+| Provider | Cost | Rate Limit | Best For |
+|----------|------|------------|----------|
+| Gemini | Free tier | 1,500 req/day | Individual use, getting started |
+| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
+| Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
+
+<Tip>
+Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+</Tip>
+
+## Comparison with Claude Code Integration
+
+| Feature | Claude Code | Cursor |
+|---------|-------------|--------|
+| Session initialization | `SessionStart` hook | `beforeSubmitPrompt` hook |
+| Context injection | `additionalContext` field (immediate) | Auto-updated `.cursor/rules/` file |
+| Observation capture | `PostToolUse` hook | `afterMCPExecution`, `afterShellExecution`, `afterFileEdit` |
+| Session summary | `Stop` hook with transcript | `stop` hook (no transcript access) |
+| MCP search tools | Full support | Full support (if MCP configured) |
+| Context persistence | Session only | File-based (persists across IDE restarts) |
+
+## Troubleshooting
+
+### Worker not starting
+
+```bash
+# Check if port is already in use
+lsof -i :37777
+
+# Force restart
+bun run worker:stop && bun run worker:start
+
+# Check logs
+bun run worker:logs
+# Or view the log file directly
+tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+```
+
+### Hooks not firing
+
+1. Restart Cursor IDE after installation
+2. Check hooks are installed: `bun run cursor:status`
+3. Verify `hooks.json` exists in `.cursor/` (project-level) or `~/.cursor/` (user-level)
+4. Check Cursor Settings → Hooks tab for configuration errors
+5. Verify scripts are executable:
+   ```bash
+   chmod +x ~/.cursor/hooks/*.sh
+   ```
+
+### No context appearing
+
+1. Ensure worker is running: `bun run worker:status`
+2. Confirm worker responds: `curl http://127.0.0.1:37777/api/readiness`
+3. Check for existing observations: visit `http://localhost:37777`
+4. Verify your API key is configured correctly in `~/.claude-mem/settings.json`
+
+### Observations not being saved
+
+Test the observation endpoint directly:
+
+```bash
+curl -X POST http://127.0.0.1:37777/api/sessions/observations \
+  -H "Content-Type: application/json" \
+  -d '{"contentSessionId":"test","tool_name":"test","tool_input":{},"tool_response":{},"cwd":"/tmp"}'
+```
+
+### Rate limiting on Gemini free tier
+
+If you hit the 1,500 requests/day limit:
+- Wait until the next day (limit resets at midnight Pacific)
+- Switch to OpenRouter with a paid or free model
+- Upgrade to a paid Gemini plan
+
+### Windows: "Execution of scripts is disabled"
+
+Run PowerShell as Administrator:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine
+```
+
+### Windows: Worker not responding
+
+Check if port 37777 is in use:
+
+```powershell
+Get-NetTCPConnection -LocalPort 37777
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Gemini Setup Guide" icon="google" href="/cursor/gemini-setup">
+    Step-by-step guide to configure Gemini's free tier
+  </Card>
+  <Card title="OpenRouter Setup Guide" icon="route" href="/cursor/openrouter-setup">
+    Configure OpenRouter for 100+ model options
+  </Card>
+  <Card title="Configuration Reference" icon="gear" href="../configuration">
+    All available settings and options
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="../troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

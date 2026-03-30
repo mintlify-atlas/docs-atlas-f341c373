@@ -1,0 +1,763 @@
+---
+title: "Troubleshooting"
+description: "Solutions to common Claude Mem issues: worker not starting, context not injecting, search returning no results, and more."
+---
+
+## Quick diagnostics
+
+Before diving into specific issues, run these checks to get an overview of system health:
+
+```bash
+# Check if the worker is running
+npm run worker:status
+
+# Test worker health endpoint
+curl http://localhost:37777/health
+
+# View recent logs
+npm run worker:logs
+
+# Check database integrity
+sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+```
+
+<Tip>
+You can also describe your issue to Claude in a session — the built-in troubleshoot skill will automatically activate, run diagnostics, and suggest fixes.
+</Tip>
+
+---
+
+## Worker service issues
+
+### Worker not starting
+
+**Symptoms**: Worker status shows not running; hooks produce errors; no context is injected.
+
+<Steps>
+  <Step title="Check current status">
+
+    ```bash
+    npm run worker:status
+    ```
+  </Step>
+  <Step title="Try starting manually">
+
+    ```bash
+    npm run worker:start
+    ```
+  </Step>
+  <Step title="Check logs for errors">
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Step>
+  <Step title="Full stop-start reset">
+
+    ```bash
+    npm run worker:stop
+    npm run worker:start
+    ```
+  </Step>
+  <Step title="Verify Bun is installed">
+
+    ```bash
+    which bun
+    bun --version
+    ```
+
+    Bun is required to run the worker. It should be auto-installed during setup, but if it's missing, install it from [bun.sh](https://bun.sh).
+  </Step>
+</Steps>
+
+### Port conflict
+
+**Symptoms**: Worker fails to start with a "port already in use" error; `http://localhost:37777` shows a connection error.
+
+<Steps>
+  <Step title="Find what's using the port">
+
+    ```bash
+    lsof -i :37777
+    ```
+  </Step>
+  <Step title="Kill the conflicting process">
+
+    ```bash
+    kill -9 $(lsof -t -i:37777)
+    npm run worker:start
+    ```
+  </Step>
+  <Step title="Or switch to a different port">
+    Edit `~/.claude-mem/settings.json`:
+
+    ```json
+    {
+      "CLAUDE_MEM_WORKER_PORT": "38000"
+    }
+    ```
+
+    Then restart:
+
+    ```bash
+    npm run worker:restart
+    ```
+
+    Verify the change took effect:
+
+    ```bash
+    cat ~/.claude-mem/worker.port
+    ```
+  </Step>
+</Steps>
+
+### Worker keeps crashing
+
+**Symptoms**: Worker restarts repeatedly; logs show recurring errors.
+
+<Steps>
+  <Step title="Read the error logs">
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Step>
+  <Step title="Check database for corruption">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+    ```
+
+    If integrity check fails, see [Database corruption](#database-corruption) below.
+  </Step>
+  <Step title="Verify Bun version">
+
+    ```bash
+    bun --version
+    # Should be >= 1.0.0
+    ```
+  </Step>
+</Steps>
+
+### Worker not processing observations
+
+**Symptoms**: Observations are saved to the database but no summaries are generated.
+
+<Steps>
+  <Step title="Confirm the worker is running">
+
+    ```bash
+    npm run worker:status
+    ```
+  </Step>
+  <Step title="Check the worker logs">
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Step>
+  <Step title="Verify the database has observations">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
+    ```
+  </Step>
+  <Step title="Restart the worker">
+
+    ```bash
+    npm run worker:restart
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Stuck observation queue
+
+**Symptoms**: Observations are saved but no summaries appear, even after the worker has been running for several minutes.
+
+After a worker crash or forced shutdown, messages may remain stuck in the `processing` state. Automatic recovery is intentionally disabled — you must trigger it manually.
+
+### Option 1: CLI tool (recommended)
+
+```bash
+# Check queue and prompt to recover
+npm run queue
+
+# Auto-process without prompting
+npm run queue:process
+
+# Process up to 5 sessions at a time
+bun scripts/check-pending-queue.ts --process --limit 5
+```
+
+**Example output:**
+
+```
+Worker is healthy ✓
+
+Queue Summary:
+  Pending: 12 messages
+  Processing: 2 messages (1 stuck)
+  Failed: 0 messages
+
+Sessions with pending work: 3
+  Session 44: 5 pending, 1 processing (age: 2m)
+  Session 45: 4 pending, 1 processing (age: 7m - STUCK)
+  Session 46: 2 pending
+
+Would you like to process these pending queues? (y/n)
+```
+
+### Option 2: HTTP API
+
+```bash
+# Check queue status
+curl http://localhost:37777/api/pending-queue
+
+# Trigger manual recovery
+curl -X POST http://localhost:37777/api/pending-queue/process \
+  -H "Content-Type: application/json" \
+  -d '{"sessionLimit": 10}'
+```
+
+### If recovery fails
+
+<AccordionGroup>
+  <Accordion title="Verify worker health">
+
+    ```bash
+    curl http://localhost:37777/health
+    # Expected: {"status":"ok","uptime":12345,"port":37777}
+    ```
+  </Accordion>
+  <Accordion title="View stuck messages directly">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "
+      SELECT id, session_db_id, status, retry_count,
+             (strftime('%s', 'now') * 1000 - started_processing_at_epoch) / 60000 as age_minutes
+      FROM pending_messages
+      WHERE status = 'processing'
+      ORDER BY started_processing_at_epoch;
+    "
+    ```
+  </Accordion>
+  <Accordion title="Force reset stuck messages (nuclear option)">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "
+      UPDATE pending_messages
+      SET status = 'pending', started_processing_at_epoch = NULL
+      WHERE status = 'processing';
+    "
+    ```
+
+    Then re-run recovery:
+
+    ```bash
+    npm run queue:process
+    ```
+  </Accordion>
+  <Accordion title="Check for SDK errors in logs">
+
+    ```bash
+    npm run worker:logs | grep -i error
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Context not injecting
+
+### No context appears in new sessions
+
+**Symptoms**: Claude starts each session without any memory of past work.
+
+<Steps>
+  <Step title="Check if summaries exist">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
+    ```
+
+    If the count is 0, observation processing has not run yet. Start a session, use a few tools, then close it and wait for summaries to generate.
+  </Step>
+  <Step title="Test context injection manually">
+
+    ```bash
+    npm run test:context
+    ```
+  </Step>
+  <Step title="Verbose context test">
+
+    ```bash
+    npm run test:context:verbose
+    ```
+  </Step>
+  <Step title="Check database integrity">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+    ```
+  </Step>
+</Steps>
+
+### Hooks not firing
+
+**Symptoms**: No context appears and no observations are being recorded.
+
+<Steps>
+  <Step title="Verify hooks are configured">
+
+    ```bash
+    cat plugin/hooks/hooks.json
+    ```
+  </Step>
+  <Step title="Validate hooks.json is valid JSON">
+
+    ```bash
+    cat plugin/hooks/hooks.json | jq .
+    ```
+  </Step>
+  <Step title="Check script permissions">
+
+    ```bash
+    ls -la plugin/scripts/*.js
+    ```
+  </Step>
+  <Step title="Test context hook manually">
+
+    ```bash
+    echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
+    ```
+  </Step>
+</Steps>
+
+### Hooks timing out
+
+**Symptoms**: Hook execution errors in Claude Code; context injection takes too long.
+
+<Steps>
+  <Step title="Check the worker is running">
+    If the worker is not running, hooks will wait for it and eventually time out.
+
+    ```bash
+    npm run worker:status
+    npm run worker:start
+    ```
+  </Step>
+  <Step title="Check database size">
+
+    ```bash
+    ls -lh ~/.claude-mem/claude-mem.db
+    ```
+
+    A very large database can cause slow queries. Run `VACUUM` to reclaim space:
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+    ```
+  </Step>
+  <Step title="Increase hook timeout">
+    Edit `plugin/hooks/hooks.json` and raise the timeout value:
+
+    ```json
+    {
+      "timeout": 180
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Search issues
+
+### Search tools not available in Claude Code
+
+**Symptoms**: The `search`, `timeline`, and `get_observations` MCP tools don't appear.
+
+<Steps>
+  <Step title="Check MCP configuration">
+
+    ```bash
+    cat plugin/.mcp.json
+    ```
+  </Step>
+  <Step title="Verify MCP server binary exists">
+
+    ```bash
+    ls -l plugin/scripts/mcp-server.cjs
+    ```
+  </Step>
+  <Step title="Rebuild if the binary is missing">
+
+    ```bash
+    npm run build
+    ```
+  </Step>
+  <Step title="Restart Claude Code">
+    The MCP server is loaded at Claude Code startup — a restart is required after rebuild.
+  </Step>
+</Steps>
+
+### Search returns no results
+
+**Symptoms**: Valid queries return empty results even though you have prior sessions.
+
+<Steps>
+  <Step title="Confirm the database has data">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
+    ```
+  </Step>
+  <Step title="Check FTS5 tables are populated">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations_fts;"
+    ```
+
+    If `observations_fts` is empty but `observations` has rows, rebuild the FTS index.
+  </Step>
+  <Step title="Rebuild FTS5 index">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "
+      INSERT INTO observations_fts(observations_fts) VALUES('rebuild');
+      INSERT INTO session_summaries_fts(session_summaries_fts) VALUES('rebuild');
+      INSERT INTO user_prompts_fts(user_prompts_fts) VALUES('rebuild');
+    "
+    ```
+  </Step>
+  <Step title="Simplify your query">
+    Special characters can cause FTS5 syntax errors. Use simple words:
+
+    ```
+    # Avoid
+    search(query="[auth] fix")
+
+    # Prefer
+    search(query="auth fix")
+    ```
+  </Step>
+</Steps>
+
+### Token limit errors from MCP
+
+**Symptoms**: "exceeded token limit" errors when calling `get_observations`.
+
+Use the 3-layer progressive disclosure workflow — don't jump directly to `get_observations`:
+
+<Steps>
+  <Step title="Start with search to get an index">
+
+    ```
+    search(query="your topic", limit=10)
+    ```
+  </Step>
+  <Step title="Review IDs and fetch only relevant ones">
+
+    ```
+    get_observations(ids=[<2-3 relevant IDs>])
+    ```
+  </Step>
+</Steps>
+
+Additional strategies:
+- Reduce the `limit` parameter in `search`
+- Use `type` and concept filters to narrow results
+- Paginate with `offset` for large result sets
+- Always batch multiple IDs in a single `get_observations` call
+
+---
+
+## Database issues
+
+### Database locked
+
+**Symptoms**: "database is locked" errors in worker logs.
+
+<Steps>
+  <Step title="Stop the worker">
+
+    ```bash
+    npm run worker:stop
+    ```
+  </Step>
+  <Step title="Find processes holding locks">
+
+    ```bash
+    lsof ~/.claude-mem/claude-mem.db
+    ```
+  </Step>
+  <Step title="Kill the locking process">
+
+    ```bash
+    kill -9 <PID>
+    ```
+  </Step>
+  <Step title="Restart the worker">
+
+    ```bash
+    npm run worker:start
+    ```
+  </Step>
+</Steps>
+
+### Database corruption
+
+**Symptoms**: `PRAGMA integrity_check` returns errors; unusual query failures.
+
+<Steps>
+  <Step title="Run integrity check">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+    ```
+  </Step>
+  <Step title="Back up the database">
+
+    ```bash
+    cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+    ```
+  </Step>
+  <Step title="Attempt repair with VACUUM">
+
+    ```bash
+    sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+    ```
+  </Step>
+  <Step title="Last resort: recreate the database">
+
+    ```bash
+    rm ~/.claude-mem/claude-mem.db
+    npm run worker:start   # recreates the schema automatically
+    ```
+
+    <Warning>
+    Deleting the database is irreversible. All stored observations and summaries will be lost. Make a backup first.
+    </Warning>
+  </Step>
+</Steps>
+
+### Database too large
+
+**Symptoms**: Slow context injection; slow search; large file size at `~/.claude-mem/claude-mem.db`.
+
+```bash
+# Check size
+ls -lh ~/.claude-mem/claude-mem.db
+
+# Reclaim space from deleted rows
+sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
+
+# Delete sessions older than 30 days
+sqlite3 ~/.claude-mem/claude-mem.db "
+  DELETE FROM observations WHERE created_at_epoch < (strftime('%s', 'now', '-30 days') * 1000);
+  DELETE FROM session_summaries WHERE created_at_epoch < (strftime('%s', 'now', '-30 days') * 1000);
+"
+
+# Rebuild FTS index after deletion
+sqlite3 ~/.claude-mem/claude-mem.db "
+  INSERT INTO observations_fts(observations_fts) VALUES('rebuild');
+  INSERT INTO session_summaries_fts(session_summaries_fts) VALUES('rebuild');
+"
+```
+
+---
+
+## Installation issues
+
+### Plugin not found
+
+**Symptoms**: `/plugin install claude-mem` fails with "not found".
+
+```bash
+# Add the marketplace first
+/plugin marketplace add thedotmack/claude-mem
+
+# Then install
+/plugin install claude-mem
+```
+
+### Build failures
+
+**Symptoms**: `npm run build` exits with errors.
+
+<Steps>
+  <Step title="Clean install">
+
+    ```bash
+    rm -rf node_modules package-lock.json
+    npm install
+    ```
+  </Step>
+  <Step title="Check Node.js version">
+
+    ```bash
+    node --version
+    # Must be >= 18.0.0
+    ```
+  </Step>
+  <Step title="Check for TypeScript errors">
+
+    ```bash
+    npx tsc --noEmit
+    ```
+  </Step>
+</Steps>
+
+### Dependencies not installing (SessionStart errors)
+
+**Symptoms**: SessionStart hook fails with "Cannot find module" errors.
+
+```bash
+# Manually install
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm install
+```
+
+### Smart install cache stale (v5.0.3+)
+
+**Symptoms**: Dependencies not updating after a plugin update.
+
+```bash
+# Clear the install cache
+rm ~/.claude/plugins/marketplaces/thedotmack/.install-version
+
+# Force reinstall
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm install --force
+```
+
+Restart Claude Code after manual installation.
+
+---
+
+## Viewer UI issues
+
+### Viewer not loading
+
+**Symptoms**: `http://localhost:37777` shows a connection error or blank page.
+
+<Steps>
+  <Step title="Confirm the worker is running on port 37777">
+
+    ```bash
+    lsof -i :37777
+    npm run worker:status
+    ```
+  </Step>
+  <Step title="Test the health endpoint">
+
+    ```bash
+    curl http://localhost:37777/health
+    ```
+  </Step>
+  <Step title="Check logs for errors">
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Step>
+  <Step title="Restart the worker">
+
+    ```bash
+    npm run worker:restart
+    ```
+  </Step>
+</Steps>
+
+### Theme not persisting
+
+**Symptoms**: Light/dark mode preference resets after browser refresh.
+
+```javascript
+// Check browser console
+localStorage.getItem('claude-mem-settings')
+
+// Clear and retry if corrupted
+localStorage.removeItem('claude-mem-settings')
+```
+
+Also check that your browser is not in private/incognito mode — these block `localStorage`.
+
+### Real-time updates not appearing (SSE disconnected)
+
+**Symptoms**: Viewer shows "Disconnected" status; new observations don't appear without a manual refresh.
+
+<Steps>
+  <Step title="Test the SSE endpoint">
+
+    ```bash
+    curl -N http://localhost:37777/stream
+    ```
+  </Step>
+  <Step title="Check browser console for errors">
+    Open DevTools (F12), go to the **Network** tab, and look for failed `/stream` requests or EventSource errors in the **Console** tab.
+  </Step>
+  <Step title="Check for VPN or proxy interference">
+    Corporate firewalls and some VPNs block Server-Sent Events. Try disabling the VPN temporarily.
+  </Step>
+  <Step title="Restart worker and refresh">
+
+    ```bash
+    npm run worker:restart
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Common error messages
+
+<AccordionGroup>
+  <Accordion title='"Worker service not responding"'>
+    **Cause**: The worker is not running, or the configured port doesn't match the running worker's port.
+
+    **Fix**: `npm run worker:restart`
+  </Accordion>
+  <Accordion title='"Database is locked"'>
+    **Cause**: Multiple processes are accessing the database simultaneously.
+
+    **Fix**: Stop the worker, kill any stale SQLite connections with `lsof ~/.claude-mem/claude-mem.db`, then restart.
+  </Accordion>
+  <Accordion title='"FTS5: syntax error"'>
+    **Cause**: Invalid characters in a search query (e.g. `[`, `]`, `*` used incorrectly).
+
+    **Fix**: Simplify the query to plain words without special characters.
+  </Accordion>
+  <Accordion title='"SQLITE_CANTOPEN"'>
+    **Cause**: The database file cannot be opened — either missing directory or wrong permissions.
+
+    **Fix**: Verify `~/.claude-mem/` exists and is writable: `ls -la ~/.claude-mem/`
+  </Accordion>
+  <Accordion title='"Cannot find module"'>
+    **Cause**: Missing npm dependencies.
+
+    **Fix**: `npm install` in the plugin directory.
+  </Accordion>
+  <Accordion title='"port already in use"'>
+    **Cause**: Another process is occupying port 37777.
+
+    **Fix**: Kill the conflicting process (`kill -9 $(lsof -t -i:37777)`) or configure a different port in `~/.claude-mem/settings.json`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Getting help
+
+If none of the solutions above resolve your issue:
+
+<CardGroup cols={2}>
+  <Card title="Generate a bug report" icon="bug">
+    Run `npm run bug-report` to collect diagnostics, then include the output when filing an issue.
+  </Card>
+  <Card title="File a GitHub issue" icon="github" href="https://github.com/thedotmack/claude-mem/issues">
+    Include error messages, relevant log output, and steps to reproduce.
+  </Card>
+</CardGroup>

@@ -1,0 +1,298 @@
+---
+title: "Export and import memory"
+description: "Share observations between Claude Mem installations, back up specific memory sets, and import community knowledge using hybrid search export."
+---
+
+The export and import scripts let you move memory data between Claude Mem installations with automatic duplicate prevention. Use them to share knowledge with teammates, back up specific memory sets, or import community-contributed observations.
+
+## Use cases
+
+<CardGroup cols={2}>
+  <Card title="Share knowledge with teammates" icon="users">
+    Export bug fix patterns, architectural decisions, or platform-specific learnings and share the JSON file with your team.
+  </Card>
+  <Card title="Back up memory sets" icon="floppy-disk">
+    Export observations about a specific project or topic before migrating machines or resetting your database.
+  </Card>
+  <Card title="Import community exports" icon="cloud-arrow-down">
+    Import observations contributed by others — Windows compatibility fixes, deployment patterns, and more.
+  </Card>
+  <Card title="Cross-machine sync" icon="arrow-right-arrow-left">
+    Export observations from one machine and import them on another to continue where you left off.
+  </Card>
+</CardGroup>
+
+## Data directory
+
+All Claude Mem data lives in `~/.claude-mem/`:
+
+```
+~/.claude-mem/
+├── claude-mem.db           # SQLite database (observations, sessions, prompts)
+├── chroma/                 # Vector embeddings for semantic search
+├── .install-version        # Cached version for smart installer
+├── worker.port             # Current worker port file
+└── logs/
+    ├── worker-out.log
+    └── worker-error.log
+```
+
+The export scripts read from this database directly.
+
+<Warning>
+  Export files contain memory data in plain text. Review exports before sharing to ensure no sensitive information — API keys, passwords, internal hostnames — is included.
+</Warning>
+
+## Exporting memories
+
+The export script searches the database using **hybrid search** (ChromaDB vector embeddings combined with SQLite FTS5 full-text search) and exports all matching observations, sessions, summaries, and prompts to a portable JSON file.
+
+```bash
+# Export all Windows-related memories
+npx tsx scripts/export-memories.ts "windows" windows-memories.json
+
+# Export bug fix patterns
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json
+
+# Export work on a specific feature
+npx tsx scripts/export-memories.ts "progressive disclosure" pd-patterns.json
+```
+
+**Parameters:**
+
+1. `<query>` — search query (uses hybrid semantic + full-text search)
+2. `<output-file>` — output JSON file path
+3. `--project=name` — optional: filter to a specific project
+
+**Example output:**
+
+```text
+🔍 Searching for: "windows"
+✅ Found 54 observations
+✅ Found 12 sessions
+✅ Found 12 summaries
+✅ Found 7 prompts
+
+📦 Export complete!
+📄 Output: windows-memories.json
+📊 Stats:
+   • 54 observations
+   • 12 sessions
+   • 12 summaries
+   • 7 prompts
+```
+
+## Importing memories
+
+The import script reads an export file and inserts records with automatic duplicate prevention. It checks whether each record already exists before inserting, skips duplicates silently, and imports everything inside a single transaction.
+
+```bash
+npx tsx scripts/import-memories.ts windows-memories.json
+```
+
+**Parameters:**
+
+1. `<input-file>` — path to an export JSON file
+
+**Example output:**
+
+```text
+📦 Import file: windows-memories.json
+📅 Exported: 2025-12-10T23:45:00.000Z
+🔍 Query: "windows"
+📊 Contains:
+   • 54 observations
+   • 12 sessions
+   • 12 summaries
+   • 7 prompts
+
+🔄 Importing sessions...
+   ✅ Imported: 12, Skipped: 0
+🔄 Importing summaries...
+   ✅ Imported: 12, Skipped: 0
+🔄 Importing observations...
+   ✅ Imported: 54, Skipped: 0
+🔄 Importing prompts...
+   ✅ Imported: 7, Skipped: 0
+
+✅ Import complete!
+```
+
+### Re-importing the same file
+
+Running the import script twice on the same file is safe — duplicates are skipped automatically:
+
+```text
+🔄 Importing sessions...
+   ✅ Imported: 0, Skipped: 12  ← all already exist
+🔄 Importing summaries...
+   ✅ Imported: 0, Skipped: 12
+🔄 Importing observations...
+   ✅ Imported: 0, Skipped: 54
+🔄 Importing prompts...
+   ✅ Imported: 0, Skipped: 7
+```
+
+### Duplicate detection strategy
+
+| Record type | Uniqueness key |
+|-------------|----------------|
+| Sessions | `claude_session_id` |
+| Summaries | `sdk_session_id` |
+| Observations | `sdk_session_id` + `title` + `created_at_epoch` |
+| Prompts | `claude_session_id` + `prompt_number` |
+
+## Export file format
+
+```json
+{
+  "exportedAt": "2025-12-10T23:45:00.000Z",
+  "exportedAtEpoch": 1733876700000,
+  "query": "windows",
+  "totalObservations": 54,
+  "totalSessions": 12,
+  "totalSummaries": 12,
+  "totalPrompts": 7,
+  "observations": [],
+  "sessions": [],
+  "summaries": [],
+  "prompts": []
+}
+```
+
+## Safety features
+
+<CardGroup cols={2}>
+  <Card title="Duplicate prevention" icon="shield-check">
+    Won't re-import records that already exist in the database.
+  </Card>
+  <Card title="Transactional imports" icon="database">
+    All-or-nothing: if the import fails mid-way, the database is rolled back to its previous state.
+  </Card>
+  <Card title="Read-only export" icon="lock">
+    The export script opens the database in read-only mode and never modifies data.
+  </Card>
+  <Card title="Dependency ordering" icon="arrow-down-1-9">
+    Sessions are imported before observations and summaries to maintain referential integrity.
+  </Card>
+</CardGroup>
+
+## Advanced usage
+
+### Export by project
+
+```bash
+# Export only memories from a specific project
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json --project=claude-mem
+
+# Export all memories for a project (empty query)
+npx tsx scripts/export-memories.ts "" all-project.json --project=my-app
+```
+
+### Export by observation type
+
+```bash
+# Export only discoveries
+npx tsx scripts/export-memories.ts "type:discovery" discoveries.json
+
+# Export only bug fixes
+npx tsx scripts/export-memories.ts "type:bugfix" bugfix-patterns.json
+```
+
+### Filter by date after export
+
+Use `jq` to filter an export file by date before importing:
+
+```bash
+npx tsx scripts/export-memories.ts "" all-memories.json
+cat all-memories.json | jq '.observations |= map(select(.created_at_epoch > 1700000000000))' > recent.json
+npx tsx scripts/import-memories.ts recent.json
+```
+
+### Combine multiple exports
+
+```bash
+npx tsx scripts/export-memories.ts "windows" windows.json
+npx tsx scripts/export-memories.ts "linux" linux.json
+
+npx tsx scripts/import-memories.ts windows.json
+npx tsx scripts/import-memories.ts linux.json
+```
+
+## Sharing with others
+
+**As an export author:**
+
+1. Export your memories:
+   ```bash
+   npx tsx scripts/export-memories.ts "windows compatibility" windows-fixes.json
+   ```
+2. Share the JSON file via GitHub Gist, your project repository, or direct transfer.
+3. Document what the export contains — what query was used and who might benefit.
+
+**As an import user:**
+
+1. Download the export file.
+2. Optionally inspect it:
+   ```bash
+   cat windows-memories.json | jq '.totalObservations, .totalSessions'
+   ```
+3. Import into your database:
+   ```bash
+   npx tsx scripts/import-memories.ts windows-memories.json
+   ```
+4. Verify with a search:
+   ```bash
+   curl "http://localhost:37777/api/search?query=windows&format=index&limit=10"
+   ```
+
+## Example exports
+
+These commands export useful memory sets that can be shared with others:
+
+```bash
+# Windows compatibility knowledge
+npx tsx scripts/export-memories.ts "windows compatibility installation" windows-fixes.json
+
+# Progressive disclosure architecture patterns
+npx tsx scripts/export-memories.ts "progressive disclosure architecture token" pd-patterns.json
+
+# Bug fix patterns
+npx tsx scripts/export-memories.ts "bugfix error handling" bugfix-patterns.json
+
+# Performance optimization notes
+npx tsx scripts/export-memories.ts "performance optimization caching" perf-tips.json
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Database not found">
+    ```text
+    ❌ Database not found at: /Users/you/.claude-mem/claude-mem.db
+    ```
+
+    Make sure Claude Mem is installed and has recorded at least one session. The database is created on first use.
+  </Accordion>
+
+  <Accordion title="Import file not found">
+    ```text
+    ❌ Input file not found: windows-memories.json
+    ```
+
+    Check the file path. Use an absolute path if the file is not in the current directory.
+  </Accordion>
+
+  <Accordion title="Partial import failure">
+    If the import fails part-way through, the transaction is rolled back and your database remains unchanged. Fix the issue (disk space, file corruption, etc.) and run the import again.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Folder context files" icon="folder-open" href="/usage/folder-context">
+    Auto-generated CLAUDE.md files for directory-level context
+  </Card>
+  <Card title="Search tools" icon="magnifying-glass" href="/usage/search-tools">
+    Query your memory database with MCP tools
+  </Card>
+</CardGroup>

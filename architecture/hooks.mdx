@@ -1,0 +1,565 @@
+---
+title: "Hook scripts reference"
+description: "Complete technical reference for all 7 Claude Mem hook scripts — file names, lifecycle events, stdin/stdout contracts, exit codes, and the full hooks.json configuration."
+---
+
+# Hook scripts reference
+
+Claude Mem registers hooks via `plugin/hooks/hooks.json`. At runtime, Claude Code fires lifecycle events and Claude Mem responds by running the appropriate script. This page documents every script, what it does, and the data contracts it expects.
+
+## Hooks.json — the complete configuration
+
+The actual file shipped with the plugin:
+
+```json
+{
+  "description": "Claude-mem memory system hooks",
+  "hooks": {
+    "Setup": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; \"$_R/scripts/setup.sh\"",
+        "timeout": 300
+      }]
+    }],
+    "SessionStart": [{
+      "matcher": "startup|clear|compact",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/smart-install.js\"",
+          "timeout": 300
+        },
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" start",
+          "timeout": 60
+        },
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code context",
+          "timeout": 60
+        }
+      ]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code session-init",
+        "timeout": 60
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code observation",
+        "timeout": 120
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code summarize",
+        "timeout": 120
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const{sessionId:s}=JSON.parse(d);if(!s){process.exit(0)}const r=require('http').request({hostname:'127.0.0.1',port:37777,path:'/api/sessions/complete',method:'POST',headers:{'Content-Type':'application/json'}},()=>process.exit(0));r.on('error',()=>process.exit(0));r.end(JSON.stringify({contentSessionId:s}));setTimeout(()=>process.exit(0),3000)}catch{process.exit(0)}})\"",
+        "timeout": 5
+      }]
+    }]
+  }
+}
+```
+
+<Note>
+`${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the installed plugin's root directory. The fallback `$HOME/.claude/plugins/marketplaces/thedotmack/plugin` handles environments where the variable is not set.
+</Note>
+
+---
+
+## The 5 lifecycle stages
+
+| Stage | Script | Lifecycle event | Purpose |
+|---|---|---|---|
+| 0 (pre-hook) | `smart-install.js` | Before SessionStart context | Cached dependency check |
+| 1 | `worker-service.cjs start` | SessionStart | Start Bun worker service |
+| 2 | `worker-service.cjs hook … context` | SessionStart | Inject prior session context |
+| 3 | `worker-service.cjs hook … session-init` | UserPromptSubmit | Create session, save prompt |
+| 4 | `worker-service.cjs hook … observation` | PostToolUse | Queue tool observation |
+| 5 | `worker-service.cjs hook … summarize` | Stop | Trigger session summary |
+| 6 | `cleanup-hook.js` (inline) | SessionEnd | Mark session complete |
+
+---
+
+## Script 1: smart-install.js
+
+**File:** `scripts/smart-install.js` (pre-hook, not a lifecycle hook)
+**Lifecycle event:** Runs via command chaining before context injection in `SessionStart`
+**Matcher:** `startup|clear|compact`
+**Timeout:** 300 seconds
+
+### What it does
+
+Checks whether Node.js dependencies are up to date and installs them only when necessary. Without this, every session startup would run `npm install` (2–5 seconds).
+
+**Decision logic:**
+1. Does `node_modules` exist?
+2. Does `.install-version` match the current `package.json` version?
+3. Is `better-sqlite3` present? (Legacy check — bun:sqlite requires no installation)
+
+If all checks pass: skip install (~10ms). Otherwise: run `npm install` and write the new version to `.install-version`.
+
+```typescript
+const currentVersion = getPackageVersion();
+const installedVersion = readFileSync('.install-version', 'utf-8');
+
+if (currentVersion !== installedVersion) {
+  await runNpmInstall();
+  writeFileSync('.install-version', currentVersion);
+}
+```
+
+**What it reads:** `package.json`, `.install-version` marker file
+**What it writes:** `.install-version` marker file
+
+**Exit codes:**
+- `0` — Check complete (installed or skipped)
+- `1` — Installation error (shown to user on stderr)
+
+**Added in:** v5.0.3
+
+---
+
+## Script 2: worker-service.cjs start
+
+**File:** `plugin/scripts/worker-service.cjs`
+**Command argument:** `start`
+**Lifecycle event:** SessionStart (second hook in sequence)
+**Matcher:** `startup|clear|compact`
+**Timeout:** 60 seconds
+
+### What it does
+
+Ensures the Bun-managed worker process is running. Uses a three-layer health check:
+
+1. Does `~/.claude-mem/.worker.pid` exist?
+2. Is the process with that PID alive? (`kill(pid, 0)`)
+3. Does `GET http://127.0.0.1:37777/health` return OK?
+
+If all three pass, the worker is already running and the hook returns immediately. Otherwise, it spawns a new Bun process.
+
+**What it reads:** `~/.claude-mem/.worker.pid`, `~/.claude-mem/.worker.port`
+**What it writes:** `~/.claude-mem/.worker.pid`, `~/.claude-mem/.worker.port`
+
+**Exit codes:**
+- `0` — Worker confirmed running
+- `0` — Worker started successfully (or startup errors are swallowed to prevent session breakage)
+
+---
+
+## Script 3: context-hook.js (worker-service hook … context)
+
+**File:** `plugin/scripts/context-hook.js` / `worker-service.cjs hook claude-code context`
+**Lifecycle event:** SessionStart (third hook in sequence)
+**Source:** `src/hooks/context-hook.ts`
+**Matcher:** `startup|clear|compact`
+**Timeout:** 60 seconds
+
+### What it does
+
+Fetches context from previous sessions and injects it silently into Claude's initial system prompt.
+
+**Processing steps:**
+1. Wait for worker to be healthy (health check with retry, max 10s)
+2. Extract project name from `cwd`: `path.basename(cwd)`
+3. Call `GET http://127.0.0.1:37777/api/context/inject?project={project}`
+4. Return the formatted markdown as `hookSpecificOutput.additionalContext`
+
+### Stdin
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}
+```
+
+### Stdout
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "# [claude-mem] recent context\n\n**Legend:** 🎯 session-request ...\n\n### Oct 26, 2025\n\n**General**\n| ID | Time | T | Title | Tokens |\n..."
+  }
+}
+```
+
+**Context format (progressive disclosure index):**
+```markdown
+# [claude-mem] recent context
+
+**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution ...
+
+### Oct 26, 2025
+
+**General**
+| ID | Time | T | Title | Tokens |
+|----|------|---|-------|--------|
+| #2586 | 12:58 AM | 🔵 | Context hook file empty | ~51 |
+
+*Use MCP search tools to access full details*
+```
+
+**What it reads:** Worker HTTP API (`/api/context/inject`) → SQLite `session_summaries` and `observations` tables
+**What it writes:** Nothing (read-only)
+
+**Configuration:** `CLAUDE_MEM_CONTEXT_OBSERVATIONS` env var controls the number of observations shown (default: 50)
+
+**Exit codes:**
+- `0` — Context injected (or gracefully empty if worker unavailable)
+
+<Note>
+As of Claude Code 2.1.0, context is injected silently via `additionalContext`. It is not shown to the user as a message.
+</Note>
+
+---
+
+## Script 4: new-hook.js (worker-service hook … session-init)
+
+**File:** `plugin/scripts/new-hook.js` / `worker-service.cjs hook claude-code session-init`
+**Lifecycle event:** UserPromptSubmit
+**Source:** `src/hooks/new-hook.ts`
+**Matcher:** None (runs for every prompt)
+**Timeout:** 60 seconds
+
+### What it does
+
+Creates or retrieves the session record for this conversation and saves the user's prompt for full-text search.
+
+**Processing steps:**
+1. Extract project name from `cwd`
+2. Strip privacy tags (`<private>...</private>`, `<claude-mem-context>...</claude-mem-context>`) from the prompt
+3. If prompt is entirely private after stripping, skip saving
+4. `INSERT OR IGNORE INTO sdk_sessions` — idempotent; returns existing row if session already exists (continuation prompts)
+5. Increment `prompt_counter` on the session row
+6. `INSERT INTO user_prompts` with the cleaned prompt text and prompt number
+7. POST `http://127.0.0.1:37777/sessions/{sessionDbId}/init` (fire-and-forget, 2s timeout)
+
+**Idempotency:** Using the same `session_id` always maps to the same database row. This handles continuation prompts correctly.
+
+### Stdin
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "prompt": "Add login feature to the API"
+}
+```
+
+### Stdout
+
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+**What it reads:** SQLite `sdk_sessions` table
+**What it writes:** SQLite `sdk_sessions`, `user_prompts` tables; HTTP POST to worker
+
+**Exit codes:**
+- `0` — Session initialized (or skipped for private prompts)
+
+<Warning>
+Never generate your own session IDs. Always use the `session_id` provided by Claude Code via stdin — this is the source of truth for linking all observations and summaries together.
+</Warning>
+
+---
+
+## Script 5: save-hook.js (worker-service hook … observation)
+
+**File:** `plugin/scripts/save-hook.js` / `worker-service.cjs hook claude-code observation`
+**Lifecycle event:** PostToolUse
+**Source:** `src/hooks/save-hook.ts`
+**Matcher:** `*` (all tools)
+**Timeout:** 120 seconds
+
+### What it does
+
+Captures tool execution data and sends it to the worker for asynchronous AI compression. The hook itself returns in ~8ms; the AI compression runs in the background over 1–30 seconds.
+
+**Processing steps:**
+1. Check the skip list — discard low-value tools immediately:
+   ```typescript
+   const SKIP_TOOLS = new Set([
+     'ListMcpResourcesTool', // MCP infrastructure noise
+     'SlashCommand',          // Command invocation
+     'Skill',                 // Skill invocation
+     'TodoWrite',             // Task management meta-tool
+     'AskUserQuestion'        // User interaction
+   ]);
+   ```
+2. Ensure worker is running (health check)
+3. Strip privacy tags from `tool_input` and `tool_response`
+4. HTTP POST to worker (fire-and-forget, 2s timeout):
+   ```typescript
+   POST http://127.0.0.1:37777/api/sessions/observations
+   Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+   ```
+
+### Stdin
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "tool_name": "Read",
+  "tool_input": { "file_path": "/src/index.ts" },
+  "tool_response": "file contents..."
+}
+```
+
+### Stdout
+
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+**What it reads:** Stdin from Claude Code
+**What it writes:** HTTP POST to worker (worker writes to SQLite and Chroma)
+
+**Async worker processing:**
+1. `createSDKSession(claudeSessionId, '', '')` → returns `sessionDbId`
+2. Checks privacy (skips observation if user prompt was entirely private)
+3. Strips memory tags from `tool_input` and `tool_response` (defense-in-depth)
+4. Queues observation for SDK agent
+5. SDK agent calls Claude to compress into structured XML
+6. Stores compressed observation in database, syncs to Chroma vector DB
+
+**Exit codes:**
+- `0` — Observation queued (or skipped for low-value/private tools)
+
+---
+
+## Script 6: summary-hook.js (worker-service hook … summarize)
+
+**File:** `plugin/scripts/summary-hook.js` / `worker-service.cjs hook claude-code summarize`
+**Lifecycle event:** Stop
+**Source:** `src/hooks/summary-hook.ts`
+**Matcher:** None (runs on every stop)
+**Timeout:** 120 seconds
+
+### What it does
+
+Triggers asynchronous session summary generation when the user stops asking questions. The hook returns immediately; the actual summarization runs in the worker.
+
+**Processing steps:**
+1. Read the transcript JSONL file to extract:
+   - Last user message (type: `"user"`)
+   - Last assistant message (type: `"assistant"`, filtering out `<system-reminder>` tags)
+2. Ensure worker is running
+3. POST to worker (fire-and-forget, 2s timeout):
+   ```typescript
+   POST http://127.0.0.1:37777/api/sessions/summarize
+   Body: { claudeSessionId, last_user_message, last_assistant_message }
+   ```
+4. Signal the worker to stop the processing spinner:
+   ```typescript
+   POST http://127.0.0.1:37777/api/processing
+   Body: { isProcessing: false }
+   ```
+
+### Stdin
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "transcript_path": "/path/to/transcript.jsonl"
+}
+```
+
+### Stdout
+
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
+**What it reads:** Transcript JSONL file from disk
+**What it writes:** HTTP POST to worker (worker writes to SQLite `session_summaries` table)
+
+**Async worker processing:**
+1. Looks up `sessionDbId` from `claudeSessionId`
+2. Queues summarization for SDK agent
+3. SDK agent calls Claude with structured prompt
+4. Parses XML response with fields: `request`, `investigated`, `learned`, `completed`, `next_steps`
+5. Stores in `session_summaries` table, syncs to Chroma
+
+**Exit codes:**
+- `0` — Summary queued
+
+---
+
+## Script 7: cleanup-hook.js (inline SessionEnd)
+
+**File:** Inline `node -e "..."` in `hooks.json`
+**Lifecycle event:** SessionEnd
+**Source:** `src/hooks/cleanup-hook.ts`
+**Matcher:** None (runs on all session ends)
+**Timeout:** 5 seconds
+
+### What it does
+
+Marks the session as completed so the worker can update its state and broadcast to SSE clients (viewer UI). The hook is intentionally minimal — it is inlined directly in `hooks.json` to avoid a process startup penalty for a short-lived operation.
+
+**Processing steps:**
+1. Parse `sessionId` from stdin JSON
+2. POST to worker (fire-and-forget, 3s timeout):
+   ```typescript
+   POST http://127.0.0.1:37777/api/sessions/complete
+   Body: { contentSessionId: sessionId }
+   ```
+3. Exit `0` regardless of outcome (HTTP errors are swallowed)
+
+### Stdin
+
+```json
+{
+  "session_id": "claude-session-abc123",
+  "cwd": "/path/to/project",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "reason": "exit"
+}
+```
+
+### Stdout
+
+None (HTTP fire-and-forget).
+
+**What it reads:** Stdin from Claude Code
+**What it writes:** HTTP POST to worker (worker updates SQLite, broadcasts SSE event)
+
+**Async worker processing:**
+1. Looks up `sessionDbId`
+2. `UPDATE sdk_sessions SET status = 'completed', completed_at = NOW()`
+3. Broadcasts session completion event to SSE clients (updates viewer UI)
+
+**Exit codes:**
+- `0` — Always (failure to mark complete is non-fatal)
+
+---
+
+## Session state machine
+
+All seven scripts operate on the same session state:
+
+```plaintext
+[*] → Initialized (SessionStart generates session_id)
+    → Active (UserPromptSubmit fires, first prompt)
+    → Active (UserPromptSubmit fires, continuation — promptNumber++)
+    → ObservationQueued (PostToolUse fires — async, non-blocking)
+    → Summarizing (Stop fires — summary generated async)
+    → Active (user resumes, new prompt)
+    → Completed (SessionEnd fires)
+    → [*]
+```
+
+Key invariants:
+- `session_id` never changes within a conversation
+- `sessionDbId` is the integer primary key — all operations use it
+- `promptNumber` increments with each UserPromptSubmit
+- State transitions are non-blocking — hooks fire and return
+
+---
+
+## Database schema
+
+The session-centric schema that all hook scripts write to:
+
+```sql
+-- One row per Claude Code session (conversation)
+CREATE TABLE sdk_sessions (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  claude_session_id TEXT    UNIQUE NOT NULL,  -- From Claude Code hook input
+  project           TEXT    NOT NULL,          -- path.basename(cwd)
+  first_user_prompt TEXT,                      -- Nullable (v4.2.8+)
+  prompt_counter    INTEGER DEFAULT 0,
+  status            TEXT    DEFAULT 'initialized',
+  created_at        DATETIME,
+  completed_at      DATETIME
+);
+
+-- One row per user prompt within a session
+CREATE TABLE user_prompts (
+  id            INTEGER PRIMARY KEY,
+  session_id    INTEGER REFERENCES sdk_sessions(id),
+  prompt_number INTEGER,
+  prompt        TEXT,
+  created_at    DATETIME
+);
+
+-- One row per tool observation (after AI compression)
+CREATE TABLE observations (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  INTEGER REFERENCES sdk_sessions(id),
+  tool_name   TEXT,
+  compressed_observation TEXT,
+  created_at  DATETIME
+);
+
+-- One row per session summary (can have many per session)
+CREATE TABLE session_summaries (
+  id          INTEGER PRIMARY KEY,
+  session_id  INTEGER REFERENCES sdk_sessions(id),
+  request     TEXT,
+  investigated TEXT,
+  learned     TEXT,
+  completed   TEXT,
+  next_steps  TEXT,
+  created_at  DATETIME
+);
+
+-- FTS5 virtual table for full-text search
+CREATE VIRTUAL TABLE observations_fts USING fts5(
+  title, subtitle, narrative, facts, concepts,
+  content=observations
+);
+```
+
+---
+
+## Privacy and tag stripping
+
+Both `new-hook.js` and `save-hook.js` strip special tags before data is saved:
+
+```typescript
+// User-level privacy (manual)
+<private>sensitive content</private>  // removed before storing
+
+// System-level recursion prevention (auto-injected by context hook)
+<claude-mem-context>...</claude-mem-context>  // removed before storing
+```
+
+Stripping happens at the **hook layer** (edge processing) before data is sent to the worker. The worker strips tags again as defense-in-depth.
+
+Functions: `stripMemoryTagsFromPrompt()` and `stripMemoryTagsFromJson()` — source: `src/utils/tag-stripping.ts`.
+
+---
+
+## Common pitfalls
+
+| Problem | Root cause | Solution |
+|---|---|---|
+| Session ID mismatch | Different `session_id` used across hooks | Always use ID from hook stdin — never generate your own |
+| Duplicate sessions | Creating new session instead of reusing | Use `INSERT OR IGNORE` with `claude_session_id` as unique key |
+| Blocking IDE | Hook waits for full AI response | Use fire-and-forget with 2s HTTP timeout |
+| Memory tags in DB | Tag stripping skipped | Strip at hook layer before HTTP send |
+| Worker not found | Health check returns too fast | Retry loop with exponential backoff (max 10s) |
+| Context not injecting | npm install logs in stdout | Fixed in v4.3.1 — use `--loglevel=silent` flag |

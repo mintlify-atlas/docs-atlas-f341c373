@@ -1,97 +1,76 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Claude Mem — Persistent Memory for Claude Code"
+description: "Automatically capture, compress, and inject context across every Claude Code session. Never lose what Claude learned."
 ---
 
-## Setting up
+Claude Mem is a Claude Code plugin that gives your AI coding sessions a long-term memory. Every tool call, file read, bug fix, and architectural decision gets captured, compressed using Claude's Agent SDK, and injected back into future sessions — automatically, with no manual intervention.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/installation">
+    Install Claude Mem in two commands and start your first session with persistent memory.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="How It Works" icon="brain" href="/usage/getting-started">
+    Learn how lifecycle hooks capture your work and how context gets injected into new sessions.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Memory Search" icon="magnifying-glass" href="/usage/search-tools">
+    Query your entire project history with natural language using MCP search tools.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Explore the system design: hooks, worker service, SQLite, and hybrid semantic search.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Install in two commands
 
-Everything you need to create world-class documentation.
+Open a new Claude Code session and run:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+```
 
-## Need inspiration?
+Restart Claude Code. Context from your previous sessions will automatically appear at the start of every new session.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## What Claude Mem does
+
+<Steps>
+  <Step title="Captures every tool use">
+    The `PostToolUse` hook fires after every file read, write, bash command, and search. Each tool execution is sent to the background worker for AI processing.
+  </Step>
+  <Step title="Compresses into structured observations">
+    The worker service uses the Claude Agent SDK to extract structured observations — title, narrative, facts, file references, and semantic concepts — from raw tool data.
+  </Step>
+  <Step title="Injects context into new sessions">
+    When you start a new Claude Code session, the `SessionStart` hook queries the database and injects a timeline of recent observations into your session context.
+  </Step>
+  <Step title="Lets you search your history">
+    Use the built-in MCP tools (`search`, `timeline`, `get_observations`) to query your entire project history with natural language — in any session.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Progressive disclosure search" icon="layer-group" href="/usage/search-tools">
+    3-layer MCP workflow: search index → timeline context → full details. ~10x token savings vs. naive RAG.
+  </Card>
+  <Card title="Privacy control" icon="lock" href="/usage/private-tags">
+    Wrap any content in `<private>` tags to exclude it from memory storage at the hook level.
+  </Card>
+  <Card title="Web viewer UI" icon="display" href="/usage/getting-started">
+    Real-time memory stream at `http://localhost:37777` with infinite scroll, project filtering, and settings.
+  </Card>
+  <Card title="Multiple AI providers" icon="sparkles" href="/usage/gemini-provider">
+    Use Claude, Gemini (free tier available), or any OpenRouter model for observation processing.
+  </Card>
+  <Card title="Mode system" icon="sliders" href="/modes">
+    Switch between coding, email investigation, and chill modes. 28+ languages supported.
+  </Card>
+  <Card title="OpenClaw integration" icon="dragon" href="/openclaw-integration">
+    Add persistent memory to autonomous agents running on OpenClaw gateways.
+  </Card>
+</CardGroup>
+
+<Note>
+Claude Mem is open source under AGPL-3.0. Source code is available at [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem).
+</Note>

@@ -1,0 +1,155 @@
+---
+title: "Claude Desktop"
+description: "Connect Claude Desktop to your Claude Mem database and search past sessions, decisions, and observations from any conversation."
+---
+
+<Note>
+  Claude Mem MCP tools work with Claude Desktop on macOS and Windows.
+</Note>
+
+Claude Desktop can access your Claude Mem memory database through **MCP tools**. Once configured, you can search past sessions, decisions, and observations directly from any Claude Desktop conversation.
+
+## Prerequisites
+
+Before configuring MCP tools, ensure:
+
+1. **Claude Mem is installed** and the worker service is running.
+2. **The MCP server file is present** at `~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs`.
+
+### Verify the worker is running
+
+```bash
+curl http://localhost:37777/api/health
+# Expected response: {"status":"ok"}
+```
+
+## Installation
+
+<Steps>
+  <Step title="Edit the Claude Desktop configuration file">
+    Open the configuration file for your platform:
+
+    <Tabs>
+      <Tab title="macOS">
+        ```
+        ~/Library/Application Support/Claude/claude_desktop_config.json
+        ```
+
+        Add the `mcp-search` server entry:
+
+        ```json
+        {
+          "mcpServers": {
+            "mcp-search": {
+              "command": "node",
+              "args": [
+                "/Users/YOUR_USERNAME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+              ]
+            }
+          }
+        }
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```
+        %APPDATA%\Claude\claude_desktop_config.json
+        ```
+
+        Add the `mcp-search` server entry:
+
+        ```json
+        {
+          "mcpServers": {
+            "mcp-search": {
+              "command": "node",
+              "args": [
+                "C:\\Users\\YOUR_USERNAME\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\mcp-server.cjs"
+              ]
+            }
+          }
+        }
+        ```
+      </Tab>
+    </Tabs>
+
+    <Warning>
+      Replace `YOUR_USERNAME` with your actual system username.
+    </Warning>
+  </Step>
+  <Step title="Restart Claude Desktop">
+    Close and reopen Claude Desktop for the MCP server configuration to take effect.
+  </Step>
+</Steps>
+
+## Searching memory from Claude Desktop
+
+Once installed, you can ask Claude Desktop natural-language questions about your past work:
+
+```text
+What did we do last session?
+Did we fix this bug before?
+How did we implement authentication?
+What decisions did we make about the API?
+Show me changes to worker-service.ts
+```
+
+Claude will use the MCP tools to search your memory database and return relevant observations from past Claude Code sessions.
+
+## Available MCP tools
+
+The MCP server provides three tools that follow the same [3-layer workflow](/usage/search-tools) used in Claude Code:
+
+| Tool | Description |
+|------|-------------|
+| `search` | Search the memory index. Returns a compact table with IDs for filtering. |
+| `timeline` | Get chronological context around a query or observation ID. |
+| `get_observations` | Fetch full observation details by ID — use after filtering with `search` or `timeline`. |
+
+### Token-efficient workflow
+
+1. **Search** — get index with IDs (~50–100 tokens per result)
+2. **Timeline** — get context around interesting results
+3. **Get observations** — fetch full details only for the IDs you need
+
+This 3-layer approach provides approximately 10x token savings compared to fetching full observation details upfront.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="MCP server not connecting">
+    1. Verify the worker is running: `curl http://localhost:37777/api/health`
+    2. Check that the MCP server file path in the configuration matches the actual file location
+    3. Check Claude Desktop logs for errors:
+
+    <Tabs>
+      <Tab title="macOS">
+        ```bash
+        tail -f ~/Library/Logs/Claude/claude.log
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Check `%APPDATA%\Claude\logs\`
+      </Tab>
+    </Tabs>
+  </Accordion>
+
+  <Accordion title="Search returns no results">
+    1. Ensure Claude Mem has recorded at least one Claude Code session
+    2. Verify the database exists: `ls ~/.claude-mem/claude-mem.db`
+    3. Test the worker API directly: `curl "http://localhost:37777/api/search?query=test"`
+    4. Open the viewer at `http://localhost:37777` to confirm data is present
+  </Accordion>
+
+  <Accordion title="Configuration not taking effect">
+    Claude Desktop must be fully restarted (not just the window) after editing `claude_desktop_config.json`. Quit from the menu bar or system tray, then relaunch.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Search tools reference" icon="magnifying-glass" href="/usage/search-tools">
+    Full MCP tool documentation with parameter details
+  </Card>
+  <Card title="Platform integration" icon="plug" href="/platform-integration">
+    Build custom integrations with the worker HTTP API
+  </Card>
+</CardGroup>

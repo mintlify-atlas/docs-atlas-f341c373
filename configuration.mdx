@@ -1,0 +1,487 @@
+---
+title: "Configuration"
+description: "Environment variables and settings reference for Claude Mem. Configure AI providers, context injection, worker service, and more."
+---
+
+Settings are stored in `~/.claude-mem/settings.json`. The file is created automatically with defaults on first run. You can edit it directly or use the **Context Settings Modal** at `http://localhost:37777` for live preview of changes.
+
+## Core settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MODEL` | `sonnet` | AI model for processing observations when using the Claude provider |
+| `CLAUDE_MEM_PROVIDER` | `claude` | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_MODE` | `code` | Active mode profile (e.g. `code--es`, `email-investigation`) |
+| `CLAUDE_MEM_WORKER_PORT` | `37777` | Port for the background worker service |
+| `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Host address for the worker service |
+| `CLAUDE_MEM_SKIP_TOOLS` | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated list of tools excluded from observation capture |
+
+### Available Claude models
+
+Shorthand model names automatically resolve to the latest version:
+
+| Shorthand | Description |
+|-----------|-------------|
+| `haiku` | Fast and cost-efficient |
+| `sonnet` | Balanced performance (default) |
+| `opus` | Most capable |
+
+### Skipping tools
+
+You can control which tool executions are captured as observations. Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_SKIP_TOOLS": "ListMcpResourcesTool,SlashCommand,Skill"
+}
+```
+
+Common customizations:
+- **Include `TodoWrite`**: Remove it from the skip list to track task planning in your memory
+- **Include `AskUserQuestion`**: Remove it to capture decision-making conversations
+- **Skip additional tools**: Add tool names to reduce noise in your observations
+
+Changes take effect on the next tool execution — no worker restart needed.
+
+---
+
+## Context injection settings
+
+Claude Mem injects past observations into each new session. The **Context Settings Modal** at `http://localhost:37777` is the recommended way to configure these settings — it provides a live terminal preview showing exactly what will be injected at the start of your next session.
+
+### Accessing the Context Settings Modal
+
+<Steps>
+  <Step title="Open the web viewer">
+    Navigate to `http://localhost:37777` in your browser.
+  </Step>
+  <Step title="Open settings">
+    Click the **gear icon** in the header. The settings panel opens on the right.
+  </Step>
+  <Step title="Adjust and preview">
+    Change any setting and see the **Terminal Preview** on the left update in real time.
+  </Step>
+  <Step title="Auto-save">
+    Settings are saved automatically as you make changes — no submit button needed.
+  </Step>
+</Steps>
+
+### Loading settings
+
+Control how many observations are injected per session:
+
+| Setting | Default | Range | Description |
+|---------|---------|-------|-------------|
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | 1–200 | Total number of recent observations to include |
+| `CLAUDE_MEM_CONTEXT_SESSION_COUNT` | `10` | 1–50 | Number of recent sessions to pull observations from |
+
+<Note>
+Higher values give Claude more historical context but increase session startup time and token usage. The default of 50 observations from 10 sessions balances context richness with performance.
+</Note>
+
+### Filter settings
+
+Control which observation types and concepts are included.
+
+**Types** — select any combination:
+
+| Value | Description |
+|-------|-------------|
+| `bugfix` | Bug fixes and error resolutions |
+| `feature` | New functionality additions |
+| `refactor` | Code restructuring |
+| `discovery` | Learnings about how code works |
+| `decision` | Architectural or design decisions |
+| `change` | General code changes |
+
+**Concepts** — select any combination:
+
+| Value | Description |
+|-------|-------------|
+| `how-it-works` | System behavior explanations |
+| `why-it-exists` | Rationale for code or design |
+| `what-changed` | Change summaries |
+| `problem-solution` | Problem and solution pairs |
+| `gotcha` | Edge cases and pitfalls |
+| `pattern` | Recurring patterns |
+| `trade-off` | Design trade-offs |
+
+Use the **All** or **None** buttons in the modal to quickly select or deselect all options.
+
+Setting these manually in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha,problem-solution"
+}
+```
+
+### Display settings
+
+Control how observations appear in the injected context:
+
+| Setting | Default | Options | Description |
+|---------|---------|---------|-------------|
+| `CLAUDE_MEM_CONTEXT_FULL_COUNT` | `5` | 0–20 | How many observations show their full expanded details |
+| `CLAUDE_MEM_CONTEXT_FULL_FIELD` | `narrative` | `narrative`, `facts` | Which field is expanded in full observations |
+
+The most recent N observations (set by **Count**) show their full narrative or facts. The remaining observations appear in a compact table format showing only title, type, and token counts.
+
+**Token economics toggles:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS` | `true` | Show tokens required to read each observation |
+| `CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS` | `true` | Show tokens invested in creating the observation |
+| `CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT` | `true` | Show total tokens saved by reusing cached context |
+| `CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT` | `false` | Show savings as a percentage instead of absolute token count |
+| `CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT` | `false` | Include terminal/command output snippets in context display |
+
+### Advanced context settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY` | `false` | Include the previous session's summary in injected context |
+| `CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE` | `false` | Include the previous session's final message in injected context |
+
+### Full manual configuration example
+
+```json
+{
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+  "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+  "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+  "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
+}
+```
+
+---
+
+## Gemini provider settings
+
+Use Google Gemini as the AI provider for observation processing. A free tier is available via Google AI Studio.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_GEMINI_API_KEY` | — | Your Gemini API key (get a free key at [aistudio.google.com](https://aistudio.google.com/app/apikey)) |
+| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite` | Model to use: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash-preview` |
+
+To activate Gemini:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite"
+}
+```
+
+---
+
+## OpenRouter provider settings
+
+Use OpenRouter to access 100+ models for observation processing.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OPENROUTER_API_KEY` | — | Your OpenRouter API key (get one at [openrouter.ai/keys](https://openrouter.ai/keys)) |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | `xiaomi/mimo-v2-flash:free` | Model identifier — supports 100+ models |
+| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | `20` | Maximum messages in conversation history |
+| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS` | `100000` | Token budget safety limit |
+| `CLAUDE_MEM_OPENROUTER_SITE_URL` | — | Optional URL for OpenRouter analytics |
+| `CLAUDE_MEM_OPENROUTER_APP_NAME` | `claude-mem` | Optional app name for OpenRouter analytics |
+
+To activate OpenRouter:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "your-api-key-here",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "xiaomi/mimo-v2-flash:free"
+}
+```
+
+---
+
+## System configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
+| `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR`, or `SILENT` |
+| `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
+| `CLAUDE_MEM_EXCLUDED_PROJECTS` | — | Comma-separated project names to exclude from memory capture |
+| `CLAUDE_MEM_MAX_CONCURRENT_AGENTS` | — | Maximum number of concurrent AI processing agents in the worker |
+| `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to the Claude Code CLI (primarily needed on Windows) |
+
+### Data directory structure
+
+```
+~/.claude-mem/
+├── claude-mem.db           # SQLite database
+├── settings.json           # User settings
+├── .install-version        # Cached version for smart installer
+├── worker.port             # Current worker port file
+└── logs/
+    ├── worker-out.log      # Worker stdout logs
+    └── worker-error.log    # Worker stderr logs
+```
+
+<Tip>
+In production (installed plugin), the data directory is always `~/.claude-mem/` regardless of `CLAUDE_PLUGIN_ROOT`. Use `CLAUDE_MEM_DATA_DIR` to override during development only.
+</Tip>
+
+---
+
+## Worker service management
+
+The worker service is a background process managed by Bun. It starts automatically the first time you open a Claude Code session and continues running in the background.
+
+<CodeGroup>
+
+```bash Start worker
+npm run worker:start
+```
+
+```bash Stop worker
+npm run worker:stop
+```
+
+```bash Restart worker
+npm run worker:restart
+```
+
+```bash Check status
+npm run worker:status
+```
+
+</CodeGroup>
+
+### Custom worker port
+
+If port `37777` is already in use, configure a different port:
+
+```json
+{
+  "CLAUDE_MEM_WORKER_PORT": "38000"
+}
+```
+
+Then restart the worker:
+
+```bash
+npm run worker:restart
+```
+
+Verify the new port is active:
+
+```bash
+cat ~/.claude-mem/worker.port
+```
+
+### Debug logging
+
+Enable verbose logging for the worker:
+
+```bash
+export DEBUG=claude-mem:*
+npm run worker:restart
+npm run worker:logs
+```
+
+---
+
+## Folder context files
+
+Claude Mem can automatically generate `CLAUDE.md` files in your project folders containing activity timelines. This feature is disabled by default.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder `CLAUDE.md` files |
+
+Enable it in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED": "true"
+}
+```
+
+---
+
+## Hooks configuration
+
+Hooks are defined in `plugin/hooks/hooks.json`. They fire at each stage of the Claude Code session lifecycle.
+
+```json
+{
+  "description": "Claude-mem memory system hooks",
+  "hooks": {
+    "Setup": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; \"$_R/scripts/setup.sh\"",
+        "timeout": 300
+      }]
+    }],
+    "SessionStart": [{
+      "matcher": "startup|clear|compact",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/smart-install.js\"",
+          "timeout": 300
+        },
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" start",
+          "timeout": 60
+        },
+        {
+          "type": "command",
+          "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code context",
+          "timeout": 60
+        }
+      ]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code session-init",
+        "timeout": 60
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code observation",
+        "timeout": 120
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "_R=\"${CLAUDE_PLUGIN_ROOT}\"; [ -z \"$_R\" ] && _R=\"$HOME/.claude/plugins/marketplaces/thedotmack/plugin\"; node \"$_R/scripts/bun-runner.js\" \"$_R/scripts/worker-service.cjs\" hook claude-code summarize",
+        "timeout": 120
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "node -e \"...\" ",
+        "timeout": 5
+      }]
+    }]
+  }
+}
+```
+
+### Hook timeout recommendations
+
+| Hook | Timeout | Reason |
+|------|---------|--------|
+| `Setup` | 300s | First-time dependency installation |
+| `SessionStart` (smart-install) | 300s | Dependency check (fast ~10ms when cached) |
+| `SessionStart` (worker start) | 60s | Start background worker service |
+| `SessionStart` (context inject) | 60s | Retrieve and inject session context |
+| `UserPromptSubmit` | 60s | Lightweight session initialization |
+| `PostToolUse` | 120s | Observation capture and queuing |
+| `Stop` | 120s | Summary generation |
+| `SessionEnd` | 5s | Mark session complete (fire-and-forget) |
+
+<Note>
+The `SessionStart` smart-install step is fast (~10ms) when dependencies are already installed. It only runs the full install on version changes.
+</Note>
+
+---
+
+## Mode configuration
+
+Modes configure the active workflow profile and language for observation processing.
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code"
+}
+```
+
+**Examples:**
+
+<CodeGroup>
+
+```json Spanish code mode
+{
+  "CLAUDE_MEM_MODE": "code--es"
+}
+```
+
+```json Email investigation mode
+{
+  "CLAUDE_MEM_MODE": "email-investigation"
+}
+```
+
+</CodeGroup>
+
+---
+
+## Version channel
+
+Switch between stable and beta versions from the web viewer at `http://localhost:37777`.
+
+<Steps>
+  <Step title="Open settings">
+    Click the **gear icon** in the viewer header.
+  </Step>
+  <Step title="Find version channel">
+    Locate the **Version Channel** section in the settings panel.
+  </Step>
+  <Step title="Switch versions">
+    Click **Try Beta (Endless Mode)** for experimental features, or **Switch to Stable** to return to the production release.
+  </Step>
+</Steps>
+
+Your memory data is preserved when switching versions — only the plugin code changes.
+
+<Warning>
+Endless Mode is experimental and slower than standard mode.
+</Warning>
+
+---
+
+## Configuration best practices
+
+<AccordionGroup>
+  <Accordion title="Use defaults where possible">
+    The default configuration works well for most use cases. Start with defaults and only change settings when you have a specific reason.
+  </Accordion>
+  <Accordion title="Override selectively">
+    Set only what you need in `~/.claude-mem/settings.json`. Unset values automatically fall back to defaults.
+  </Accordion>
+  <Accordion title="Restart worker after changes">
+    Most settings require a worker restart to take effect:
+
+    ```bash
+    npm run worker:restart
+    ```
+
+    Exception: `CLAUDE_MEM_SKIP_TOOLS` changes take effect immediately on the next tool execution.
+  </Accordion>
+  <Accordion title="Monitor logs after changes">
+    After restarting the worker, check logs to confirm the configuration was applied correctly:
+
+    ```bash
+    npm run worker:logs
+    ```
+  </Accordion>
+</AccordionGroup>

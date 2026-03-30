@@ -1,0 +1,93 @@
+---
+title: "Cursor + Gemini Setup"
+description: "Use Claude Mem in Cursor with Google's free Gemini API"
+---
+
+<Info>
+**Free Tier:** 1,500 requests per day with `gemini-2.5-flash-lite`. No credit card required.
+</Info>
+
+## Step 1: Get a Gemini API Key
+
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
+2. Sign in with your Google account and accept the Terms of Service
+3. Click **Create API key**, choose or create a Google Cloud project
+4. Copy your API key — you'll need it in Step 3
+
+<Tip>
+Enable billing on your Google Cloud project to unlock 4,000 RPM (vs 10 RPM without billing). You won't be charged unless you exceed the free quota.
+</Tip>
+
+## Step 2: Clone and build Claude Mem
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+bun install
+bun run build
+```
+
+## Step 3: Configure Gemini provider
+
+<Tabs>
+  <Tab title="Interactive setup (recommended)">
+    Run the setup wizard — it detects you don't have Claude Code, lets you pick Gemini, and installs hooks automatically:
+
+    ```bash
+    bun run cursor:setup
+    ```
+  </Tab>
+  <Tab title="Manual configuration">
+    ```bash
+    mkdir -p ~/.claude-mem
+    cat > ~/.claude-mem/settings.json << 'EOF'
+    {
+      "CLAUDE_MEM_PROVIDER": "gemini",
+      "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+    }
+    EOF
+
+    bun run cursor:install
+    bun run worker:start
+    ```
+  </Tab>
+</Tabs>
+
+## Step 4: Restart Cursor and verify
+
+Restart Cursor IDE, then confirm everything is running:
+
+```bash
+bun run worker:status
+bun run cursor:status
+```
+
+Open `http://localhost:37777` to see the memory viewer.
+
+## Available models
+
+| Model | Free Tier RPM | Notes |
+|-------|---------------|-------|
+| `gemini-2.5-flash-lite` | 10 (4,000 with billing) | **Default.** Fastest, highest free RPM |
+| `gemini-2.5-flash` | 5 (1,000 with billing) | Higher capability |
+
+To change the model, update `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-key",
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash"
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Cursor Integration Overview" icon="cursor" href="/cursor/index">
+    All Cursor features and hook mappings
+  </Card>
+  <Card title="OpenRouter Setup" icon="route" href="/cursor/openrouter-setup">
+    Alternative provider with 100+ models
+  </Card>
+</CardGroup>

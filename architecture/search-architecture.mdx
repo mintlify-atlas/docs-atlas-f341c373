@@ -1,0 +1,491 @@
+---
+title: "Search Architecture"
+description: "MCP tools, 3-layer progressive disclosure workflow, FTS5 keyword search, and ChromaDB semantic search"
+---
+
+# Search architecture
+
+Claude-Mem uses an MCP-based search architecture that provides intelligent memory retrieval through 4 streamlined tools following a 3-layer progressive disclosure workflow.
+
+## Overview
+
+```plaintext
+MCP Tools → MCP Protocol → HTTP API → Worker Service → SQLite FTS5 + ChromaDB
+```
+
+<CardGroup cols={2}>
+  <Card title="MCP tools" icon="wrench">
+    4 tools: `search`, `timeline`, `get_observations`, `__IMPORTANT`
+  </Card>
+  <Card title="MCP server" icon="server">
+    Thin wrapper (~312 lines) that translates MCP protocol to HTTP API calls
+  </Card>
+  <Card title="HTTP API" icon="globe">
+    Fast search operations on Worker Service at port 37777
+  </Card>
+  <Card title="Hybrid search" icon="database">
+    SQLite FTS5 for keyword search, ChromaDB for semantic/vector search
+  </Card>
+</CardGroup>
+
+**Token efficiency**: ~10x savings through the 3-layer workflow pattern.
+
+## How it works
+
+<Steps>
+  <Step title="User query">
+    Claude has 4 MCP tools available. When searching memory, it follows the 3-layer workflow:
+
+    ```plaintext
+    Step 1: search(query="authentication bug", type="bugfix", limit=10)
+    Step 2: timeline(anchor=<observation_id>, depth_before=3, depth_after=3)
+    Step 3: get_observations(ids=[123, 456, 789])
+    ```
+  </Step>
+  <Step title="MCP protocol">
+    The MCP server receives a tool call via JSON-RPC over stdio:
+
+    ```json
+    {
+      "method": "tools/call",
+      "params": {
+        "name": "search",
+        "arguments": {
+          "query": "authentication bug",
+          "type": "bugfix",
+          "limit": 10
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="HTTP API call">
+    The MCP server translates the call to an HTTP request:
+
+    ```typescript
+    const url = `http://localhost:37777/api/search?query=authentication%20bug&type=bugfix&limit=10`;
+    const response = await fetch(url);
+    ```
+  </Step>
+  <Step title="Worker processing">
+    The worker service executes the FTS5 query:
+
+    ```sql
+    SELECT * FROM observations_fts
+    WHERE observations_fts MATCH ?
+    AND type = 'bugfix'
+    ORDER BY rank
+    LIMIT 10
+    ```
+  </Step>
+  <Step title="Results returned">
+    The worker returns structured data through the MCP server to Claude:
+
+    ```json
+    {
+      "content": [{
+        "type": "text",
+        "text": "| ID | Time | Title | Type |\n|---|---|---|---|\n| #123 | 2:15 PM | Fixed auth token expiry | bugfix |"
+      }]
+    }
+    ```
+  </Step>
+  <Step title="Claude processes results">
+    Claude reviews the compact index, decides which observations are relevant, and can use `timeline` for context or `get_observations` to fetch full details for specific IDs.
+  </Step>
+</Steps>
+
+## The 4 MCP tools
+
+### `__IMPORTANT` — Workflow documentation
+
+Always visible to Claude. Explains the 3-layer workflow pattern and enforces it at the tool level.
+
+```plaintext
+3-LAYER WORKFLOW (ALWAYS FOLLOW):
+1. search(query) → Get index with IDs (~50-100 tokens/result)
+2. timeline(anchor=ID) → Get context around interesting results
+3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+NEVER fetch full details without filtering first. 10x token savings.
+```
+
+### `search` — Search memory index
+
+Step 1 of the workflow. Returns a compact index for filtering.
+
+```typescript
+{
+  name: 'search',
+  description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: true  // Accepts any parameters
+  }
+}
+```
+
+**HTTP endpoint**: `GET /api/search`
+
+| Parameter | Description |
+|---|---|
+| `query` | Full-text search query |
+| `limit` | Maximum results (default: 20) |
+| `type` | Filter by observation type |
+| `project` | Filter by project name |
+| `dateStart`, `dateEnd` | Date range filters |
+| `offset` | Pagination offset |
+| `orderBy` | Sort order |
+
+**Returns**: Compact index with IDs, titles, dates, types (~50–100 tokens per result).
+
+### `timeline` — Get chronological context
+
+Step 2 of the workflow. Reveals the narrative arc around a specific observation.
+
+```typescript
+{
+  name: 'timeline',
+  description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: true
+  }
+}
+```
+
+**HTTP endpoint**: `GET /api/timeline`
+
+| Parameter | Description |
+|---|---|
+| `anchor` | Observation ID to center timeline around |
+| `query` | Search query to find anchor automatically |
+| `depth_before` | Observations before anchor (default: 3) |
+| `depth_after` | Observations after anchor (default: 3) |
+| `project` | Filter by project name |
+
+Either `anchor` or `query` must be provided. **Returns**: Chronological view of what happened before, during, and after the anchor point.
+
+### `get_observations` — Fetch full details
+
+Step 3 of the workflow. Fetches complete data only for IDs pre-filtered in steps 1–2.
+
+```typescript
+{
+  name: 'get_observations',
+  description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: {
+        type: 'array',
+        items: { type: 'number' },
+        description: 'Array of observation IDs to fetch (required)'
+      }
+    },
+    required: ['ids'],
+    additionalProperties: true
+  }
+}
+```
+
+**HTTP endpoint**: `POST /api/observations/batch`
+
+```json
+{
+  "ids": [123, 456, 789],
+  "orderBy": "date_desc",
+  "project": "my-app"
+}
+```
+
+**Returns**: Complete observation details (~500–1,000 tokens per observation).
+
+## MCP server implementation
+
+**Location**: `plugin/scripts/mcp-server.cjs`
+
+The MCP server is a thin wrapper — it contains no business logic. Its sole job is protocol translation from MCP JSON-RPC to HTTP API calls.
+
+**Key characteristics**:
+- ~312 lines of code (reduced from ~2,718 lines in the previous implementation)
+- Single source of truth: the Worker HTTP API
+- Simple schemas with `additionalProperties: true`
+
+**Handler pattern**:
+
+```typescript
+{
+  name: 'search',
+  handler: async (args: any) => {
+    const endpoint = '/api/search';
+    const searchParams = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(args)) {
+      searchParams.append(key, String(value));
+    }
+
+    const url = `http://localhost:37777${endpoint}?${searchParams}`;
+    const response = await fetch(url);
+    return await response.json();
+  }
+}
+```
+
+## Hybrid search approach
+
+### FTS5 keyword search (SQLite)
+
+SQLite FTS5 virtual tables provide fast full-text keyword matching:
+
+```sql
+-- observations_fts covers: title, subtitle, narrative, text, facts, concepts
+SELECT * FROM observations_fts
+WHERE observations_fts MATCH ?
+AND type = ?
+AND date >= ? AND date <= ?
+ORDER BY rank
+LIMIT ? OFFSET ?
+```
+
+FTS5 supports phrase matching, boolean operators, and column-scoped queries. Typical query latency is sub-10ms.
+
+### Semantic search (ChromaDB)
+
+ChromaDB provides vector embeddings for semantic similarity search — finding conceptually related observations even when exact keywords don't match. The `ChromaSync` service (`src/services/sync/ChromaSync.ts`) manages synchronization between SQLite and ChromaDB.
+
+<Info>
+  ChromaDB is optional. When unavailable, search falls back to FTS5 keyword search and SQL `LIKE` queries.
+</Info>
+
+### Search routing
+
+The `SessionSearch` service (`src/services/sqlite/SessionSearch.ts`) coordinates search routing:
+
+- **Vector search via ChromaDB** is the primary search mechanism
+- **FTS5** is maintained for backward compatibility; tables are kept synchronized via triggers
+- **Structured filters** (type, project, date) are applied as SQL predicates regardless of search mode
+
+## The 3-layer progressive disclosure pattern
+
+### Design philosophy
+
+Progressive disclosure is a core architectural principle: reveal information at the level of detail actually needed, on demand.
+
+<Tabs>
+  <Tab title="Layer 1: Index (search)">
+    **What**: Compact table with IDs, titles, dates, types
+
+    **Cost**: ~50–100 tokens per result
+
+    **Purpose**: Survey what exists before committing tokens
+
+    **Decision point**: "Which observations are relevant?"
+
+    ```plaintext
+    | ID  | Time     | Title                      | Type    |
+    |-----|----------|----------------------------|---------|
+    | 123 | 2:15 PM  | Fixed auth token expiry    | bugfix  |
+    | 456 | 3:42 PM  | Added OAuth refresh flow   | feature |
+    ```
+  </Tab>
+  <Tab title="Layer 2: Context (timeline)">
+    **What**: Chronological view of observations around an anchor point
+
+    **Cost**: Variable based on depth
+
+    **Purpose**: Understand narrative arc, see what led to and from a result
+
+    **Decision point**: "Do I need full details?"
+  </Tab>
+  <Tab title="Layer 3: Details (get_observations)">
+    **What**: Complete observation data (narrative, facts, files, concepts)
+
+    **Cost**: ~500–1,000 tokens per observation
+
+    **Purpose**: Deep dive on validated, relevant observations only
+
+    **Decision point**: "Apply knowledge to current task"
+  </Tab>
+</Tabs>
+
+### Token efficiency
+
+<CardGroup cols={2}>
+  <Card title="Traditional RAG" icon="triangle-exclamation">
+    Fetch 20 observations upfront: **10,000–20,000 tokens**
+
+    Relevance: ~10% (only 2 observations actually useful)
+
+    Waste: 18,000 tokens on irrelevant context
+  </Card>
+  <Card title="3-layer workflow" icon="check">
+    Step 1: search (20 results) = ~1,000–2,000 tokens
+
+    Step 2: filter to 3 relevant IDs
+
+    Step 3: get_observations (3 IDs) = ~1,500–3,000 tokens
+
+    **Total: 2,500–5,000 tokens (50–75% savings)**
+  </Card>
+</CardGroup>
+
+### Structural enforcement
+
+The 3-layer pattern is enforced by tool design, not just instructions:
+
+- You cannot fetch full details without first getting IDs from `search`
+- You cannot search without seeing the workflow reminder in `__IMPORTANT`
+- `timeline` provides a middle ground between index and full details
+
+> **Before**: Progressive disclosure was something Claude had to remember.
+>
+> **After**: Progressive disclosure is structurally impossible to bypass.
+
+## Architecture evolution
+
+<AccordionGroup>
+  <Accordion title="Before: Complex MCP implementation (9 tools)">
+    **Approach**: 9 MCP tools with detailed parameter schemas
+
+    **Token cost**: ~2,500 tokens in tool definitions per session
+
+    **Tools**:
+    - `search_observations` — Full-text search
+    - `find_by_type` — Filter by type
+    - `find_by_file` — Filter by file
+    - `find_by_concept` — Filter by concept
+    - `get_recent_context` — Recent sessions
+    - `get_observation` — Fetch single observation
+    - `get_session` — Fetch session
+    - `get_prompt` — Fetch prompt
+    - `help` — API documentation
+
+    **Problems**: Overlapping operations, complex parameter schemas, no built-in workflow guidance, high token cost at session start.
+
+    **Code size**: ~2,718 lines in `mcp-server.ts`
+  </Accordion>
+
+  <Accordion title="After: Streamlined MCP implementation (4 tools)">
+    **Approach**: 4 MCP tools following the 3-layer workflow
+
+    **Tools**:
+    1. `__IMPORTANT` — Workflow guidance (always visible)
+    2. `search` — Step 1 (index)
+    3. `timeline` — Step 2 (context)
+    4. `get_observations` — Step 3 (details)
+
+    **Benefits**: Progressive disclosure is built into tool design, no overlapping operations, simple `additionalProperties: true` schemas, clear workflow pattern.
+
+    **Code size**: ~312 lines in `mcp-server.ts` (88% reduction)
+  </Accordion>
+
+  <Accordion title="Previous: Skill-based approach">
+    Earlier versions (v5.4.0–v5.5.0) used a skill-based search approach:
+
+    - Required separate `SKILL.md` and `operations/` files
+    - HTTP API called directly via curl from skill instructions
+    - Progressive disclosure through skill loading (loaded on-demand)
+    - Token savings: ~2,250 tokens per session vs the old MCP approach
+
+    **Migration**: Skill-based search was removed in favor of the streamlined MCP architecture, which provides native MCP protocol integration, cleaner architecture, and works with both Claude Desktop and Claude Code.
+  </Accordion>
+</AccordionGroup>
+
+## Configuration
+
+<Tabs>
+  <Tab title="Claude Code">
+    MCP server is automatically configured via plugin installation. No manual setup required.
+  </Tab>
+  <Tab title="Claude Desktop">
+    Add to `claude_desktop_config.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "mcp-search": {
+          "command": "node",
+          "args": [
+            "/Users/YOUR_USERNAME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+          ]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Both clients use the same 4 MCP tools — the architecture works identically.
+
+## Security
+
+### FTS5 injection prevention
+
+All search queries are escaped before FTS5 processing:
+
+```typescript
+function escapeFTS5Query(query: string): string {
+  return query.replace(/"/g, '""');
+}
+```
+
+The test suite covers 332 injection attack patterns: special characters, SQL keywords, quote escaping, and boolean operators.
+
+### MCP protocol security
+
+- **Stdio transport**: No network exposure for the MCP protocol
+- **Local-only HTTP**: Worker API is bound to `localhost:37777`
+- **No authentication**: Local development only, no external network access
+
+## Performance
+
+| Aspect | Detail |
+|---|---|
+| FTS5 query latency | Sub-10ms for typical queries |
+| MCP overhead | Minimal — simple protocol translation only |
+| Pagination | Efficient with `offset` / `limit` |
+| Batching | `get_observations` accepts multiple IDs in a single call |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="MCP server not connected (tools not appearing in Claude)">
+    1. Verify the MCP server path in your configuration
+    2. Check that the worker service is running:
+       ```bash
+       curl http://localhost:37777/health
+       ```
+    3. Restart Claude Desktop or Claude Code
+  </Accordion>
+
+  <Accordion title="Worker service not running (MCP tools fail with connection errors)">
+    ```bash
+    npm run worker:status    # Check status
+    npm run worker:restart   # Restart worker
+    npm run worker:logs      # View logs
+    ```
+  </Accordion>
+
+  <Accordion title="Empty search results">
+    1. Test the API directly:
+       ```bash
+       curl "http://localhost:37777/api/search?query=test"
+       ```
+    2. Verify the database exists:
+       ```bash
+       ls ~/.claude-mem/claude-mem.db
+       ```
+    3. Confirm observations exist:
+       ```bash
+       curl "http://localhost:37777/api/stats"
+       ```
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+- [Worker Service](/architecture/worker-service) — HTTP API endpoint reference
+- [Database Architecture](/architecture/database) — FTS5 tables, indexes, and schema
+- [Architecture Overview](/architecture/overview) — System components and data flow

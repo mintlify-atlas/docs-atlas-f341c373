@@ -1,0 +1,294 @@
+---
+title: "Architecture Overview"
+description: "System components, technology stack, and data flow in Claude-Mem"
+---
+
+# Architecture overview
+
+Claude-Mem is a Claude Code plugin with persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
+
+## System components
+
+Claude-Mem operates as a Claude Code plugin built from five core components:
+
+<CardGroup cols={2}>
+  <Card title="Plugin hooks" icon="webhook">
+    Six lifecycle hooks capture events: SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd, and a UserMessage debugging hook.
+  </Card>
+  <Card title="Smart install" icon="download">
+    A cached dependency checker (`smart-install.js`) that runs as a pre-hook before `context-hook`. Only executes when dependency versions change.
+  </Card>
+  <Card title="Worker service" icon="server">
+    Long-running Express.js HTTP server on port 37777. Processes observations via the Claude Agent SDK and exposes 22 HTTP endpoints.
+  </Card>
+  <Card title="Database layer" icon="database">
+    SQLite 3 with the `bun:sqlite` driver. FTS5 virtual tables for full-text search, ChromaDB for semantic vector search.
+  </Card>
+  <Card title="MCP search tools" icon="magnifying-glass">
+    Four MCP tools (`search`, `timeline`, `get_observations`, `__IMPORTANT`) following a 3-layer progressive disclosure workflow.
+  </Card>
+  <Card title="Viewer UI" icon="eye">
+    React + TypeScript web interface at `http://localhost:37777`. Real-time memory stream via Server-Sent Events, packaged as a single `viewer.html` bundle.
+  </Card>
+</CardGroup>
+
+<Note>
+  `smart-install.js` is a pre-hook dependency checker — not a lifecycle hook. It is called before `context-hook` via command chaining in `hooks.json` and only runs when dependencies need updating.
+</Note>
+
+## Technology stack
+
+| Layer | Technology |
+|---|---|
+| **Language** | TypeScript (ES2022, ESNext modules) |
+| **Runtime** | Node.js 18+ |
+| **Database** | SQLite 3 with `bun:sqlite` driver |
+| **Vector store** | ChromaDB (optional, for semantic search) |
+| **HTTP server** | Express.js 4.18 |
+| **Real-time** | Server-Sent Events (SSE) |
+| **UI framework** | React + TypeScript |
+| **AI SDK** | `@anthropic-ai/claude-agent-sdk` |
+| **Build tool** | esbuild (bundles TypeScript) |
+| **Process manager** | Bun |
+| **Testing** | Node.js built-in test runner |
+
+## Data flow
+
+### Memory pipeline
+
+```plaintext
+Hook (stdin) → Database → Worker Service → SDK Processor → Database → Next Session Hook
+```
+
+<Steps>
+  <Step title="Input">
+    Claude Code sends tool execution data via stdin to hooks.
+  </Step>
+  <Step title="Storage">
+    Hooks write raw observations to the SQLite database.
+  </Step>
+  <Step title="Processing">
+    The worker service reads queued observations and processes them via the Claude Agent SDK.
+  </Step>
+  <Step title="Output">
+    Processed summaries and structured learnings are written back to the database.
+  </Step>
+  <Step title="Retrieval">
+    The next session's `context-hook` reads summaries from the database and injects them as context.
+  </Step>
+</Steps>
+
+### Search pipeline
+
+```plaintext
+User Query → MCP Tools Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
+```
+
+<Steps>
+  <Step title="User query">
+    User asks naturally: "What bugs did we fix?"
+  </Step>
+  <Step title="MCP tools invoked">
+    Claude recognizes the intent and invokes MCP search tools.
+  </Step>
+  <Step title="HTTP API">
+    MCP tools call the HTTP endpoint (e.g., `GET /api/search`).
+  </Step>
+  <Step title="SessionSearch">
+    The worker service queries FTS5 virtual tables via the `SessionSearch` service.
+  </Step>
+  <Step title="Format">
+    Results are formatted as a compact index and returned via MCP.
+  </Step>
+  <Step title="Return">
+    Claude presents formatted results to the user, fetching full details only for selected IDs.
+  </Step>
+</Steps>
+
+<Tip>
+  The search pipeline uses 3-layer progressive disclosure: `search` → `timeline` → `get_observations`. This yields roughly 10x token savings compared to fetching all observations upfront.
+</Tip>
+
+## Session lifecycle
+
+```plaintext
+┌─────────────────────────────────────────────────────────────────┐
+│ 0. Smart Install Pre-Hook Fires                                 │
+│    Checks dependencies (cached), only runs on version changes   │
+│    Not a lifecycle hook - runs before context-hook starts       │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Session Starts → Context Hook Fires                          │
+│    Starts Bun worker if needed, injects context from previous   │
+│    sessions (configurable observation count)                    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. User Types Prompt → UserPromptSubmit Hook Fires              │
+│    Creates session in database, saves raw user prompt for FTS5  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. Claude Uses Tools → PostToolUse Hook Fires (100+ times)      │
+│    Captures tool executions, sends to worker for AI compression │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 4. Worker Processes → Claude Agent SDK Analyzes                 │
+│    Extracts structured learnings via iterative AI processing    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 5. Claude Stops → Summary Hook Fires                            │
+│    Generates final summary with request, completions, learnings │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 6. Session Ends → Cleanup Hook Fires                            │
+│    Marks session complete (graceful, not DELETE), ready for     │
+│    next session context. Skips on /clear to preserve ongoing    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Directory structure
+
+```plaintext
+claude-mem/
+├── src/
+│   ├── hooks/                  # Hook implementations (6 hooks)
+│   │   ├── context-hook.ts     # SessionStart
+│   │   ├── user-message-hook.ts # UserMessage (for debugging)
+│   │   ├── new-hook.ts         # UserPromptSubmit
+│   │   ├── save-hook.ts        # PostToolUse
+│   │   ├── summary-hook.ts     # Stop
+│   │   ├── cleanup-hook.ts     # SessionEnd
+│   │   └── hook-response.ts    # Hook response utilities
+│   │
+│   ├── sdk/                    # Claude Agent SDK integration
+│   │   ├── prompts.ts          # XML prompt builders
+│   │   ├── parser.ts           # XML response parser
+│   │   └── worker.ts           # Main SDK agent loop
+│   │
+│   ├── services/
+│   │   ├── worker-service.ts   # Express HTTP + SSE service
+│   │   └── sqlite/             # Database layer
+│   │       ├── SessionStore.ts # CRUD operations
+│   │       ├── SessionSearch.ts # FTS5 search service
+│   │       ├── migrations.ts
+│   │       └── types.ts
+│   │
+│   ├── ui/                     # Viewer UI
+│   │   └── viewer/             # React + TypeScript web interface
+│   │       ├── components/     # UI components
+│   │       ├── hooks/          # React hooks
+│   │       ├── utils/          # Utilities
+│   │       └── assets/         # Fonts, logos
+│   │
+│   ├── shared/                 # Shared utilities
+│   │   ├── config.ts
+│   │   ├── paths.ts
+│   │   └── storage.ts
+│   │
+│   └── utils/
+│       ├── logger.ts
+│       ├── platform.ts
+│       └── port-allocator.ts
+│
+├── scripts/                    # Build and utility scripts
+│   └── smart-install.js        # Cached dependency checker (pre-hook)
+│
+├── plugin/                     # Plugin distribution
+│   ├── .claude-plugin/
+│   │   └── plugin.json
+│   ├── hooks/
+│   │   └── hooks.json
+│   ├── scripts/                # Built executables
+│   │   ├── context-hook.js
+│   │   ├── user-message-hook.js
+│   │   ├── new-hook.js
+│   │   ├── save-hook.js
+│   │   ├── summary-hook.js
+│   │   ├── cleanup-hook.js
+│   │   └── worker-service.cjs  # Background worker + HTTP API
+│   │
+│   ├── skills/                 # Agent skills (v5.4.0+)
+│   │   ├── mem-search/         # Search skill with progressive disclosure
+│   │   │   ├── SKILL.md        # Skill frontmatter (~250 tokens)
+│   │   │   ├── operations/     # 12 detailed operation docs
+│   │   │   └── principles/     # 2 principle guides
+│   │   └── troubleshoot/       # Troubleshooting skill
+│   │       ├── SKILL.md
+│   │       └── operations/     # 6 operation docs
+│   │
+│   └── ui/                     # Built viewer UI
+│       └── viewer.html         # Self-contained bundle
+│
+├── tests/                      # Test suite
+├── docs/                       # Documentation
+└── ecosystem.config.cjs        # Process configuration (deprecated)
+```
+
+## Component details
+
+<AccordionGroup>
+  <Accordion title="Plugin hooks (6 hooks)">
+    | Hook file | Event | Responsibility |
+    |---|---|---|
+    | `context-hook.js` | SessionStart | Starts Bun worker, injects context from previous sessions |
+    | `user-message-hook.js` | UserMessage | Debugging hook |
+    | `new-hook.js` | UserPromptSubmit | Creates session record, saves raw prompt |
+    | `save-hook.js` | PostToolUse | Captures tool executions, queues for AI compression |
+    | `summary-hook.js` | Stop | Generates final session summary |
+    | `cleanup-hook.js` | SessionEnd | Marks session complete (never deletes) |
+  </Accordion>
+
+  <Accordion title="Worker service">
+    Express.js HTTP server on port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`) with:
+
+    - 22 HTTP API endpoints total
+    - Async observation processing via Claude Agent SDK
+    - Real-time updates via Server-Sent Events
+    - Auto-managed by Bun's native `ProcessManager`
+
+    See [Worker Service](/architecture/worker-service) for HTTP API and endpoint reference.
+  </Accordion>
+
+  <Accordion title="Database layer">
+    SQLite 3 with `bun:sqlite` driver featuring:
+
+    - FTS5 virtual tables for full-text search
+    - `SessionStore` for CRUD operations
+    - `SessionSearch` for FTS5 queries
+    - ChromaDB integration for vector/semantic search
+    - Location: `~/.claude-mem/claude-mem.db`
+
+    See [Database Architecture](/architecture/database) for schema and FTS5 details.
+  </Accordion>
+
+  <Accordion title="MCP search tools">
+    Four MCP tools following the 3-layer progressive disclosure workflow:
+
+    - `__IMPORTANT` — Always-visible workflow instructions
+    - `search` — Step 1: compact index with IDs (~50–100 tokens/result)
+    - `timeline` — Step 2: chronological context around a result
+    - `get_observations` — Step 3: full details for selected IDs only
+
+    **Token savings**: ~10x vs fetching all observations upfront.
+
+    See [Search Architecture](/architecture/search-architecture) for technical details.
+  </Accordion>
+
+  <Accordion title="Viewer UI">
+    React + TypeScript web interface at `http://localhost:37777` featuring:
+
+    - Real-time memory stream via Server-Sent Events
+    - Infinite scroll pagination with automatic deduplication
+    - Project filtering and settings persistence
+    - GPU-accelerated animations
+    - Theme toggle (light/dark mode, v5.1.2+)
+    - Self-contained HTML bundle (`viewer.html`)
+
+    Built with esbuild into a single file deployment.
+  </Accordion>
+</AccordionGroup>

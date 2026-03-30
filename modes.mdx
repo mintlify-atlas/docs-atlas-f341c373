@@ -1,0 +1,216 @@
+---
+title: "Modes and languages"
+description: "Switch Claude Mem's behavior, observation categories, and output language using the mode system — without reinstalling."
+---
+
+Claude Mem uses a **mode system** to adapt its behavior, observation types, and output language. You can switch between different workflows (like coding versus email investigation) or generate memory in any of 28+ languages, all through a single setting.
+
+## What is a mode?
+
+A mode is a configuration profile that defines four things:
+
+1. **Observer role** — how Claude analyzes your work (e.g. "Software Engineer" or "Forensic Analyst")
+2. **Observation types** — valid categories for memory (e.g. "Bug Fix" and "Feature" vs. "Person" and "Organization")
+3. **Concepts** — semantic tags used for indexing (e.g. "Pattern", "Trade-off")
+4. **Language** — the language used for generating observation titles, narratives, facts, and summaries
+
+## Configuration
+
+Set the active mode in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--es"
+}
+```
+
+Or via an environment variable:
+
+```bash
+export CLAUDE_MEM_MODE="code--fr"
+```
+
+The default mode is `code` (English).
+
+## Available modes
+
+### Code mode (default)
+
+The standard mode for software development. Captures bug fixes, features, refactors, discoveries, and architectural decisions.
+
+**Mode ID:** `code`
+
+---
+
+### Code–Chill variant
+
+A behavioral variant of code mode that produces fewer observations. It only records things that would be "painful to rediscover" — shipped features, architectural decisions, and non-obvious gotchas. Routine work and obvious changes are skipped.
+
+**Mode ID:** `code--chill`
+
+---
+
+### Multilingual code modes
+
+All multilingual modes inherit behavior from code mode and instruct Claude to generate memory artifacts (titles, narratives, facts, summaries) in the target language.
+
+<Tabs>
+  <Tab title="European languages">
+    | Language | Mode ID | Native name |
+    |----------|---------|-------------|
+    | Czech | `code--cs` | Čeština |
+    | Danish | `code--da` | Dansk |
+    | Dutch | `code--nl` | Nederlands |
+    | Finnish | `code--fi` | Suomi |
+    | French | `code--fr` | Français |
+    | German | `code--de` | Deutsch |
+    | Greek | `code--el` | Ελληνικά |
+    | Hungarian | `code--hu` | Magyar |
+    | Italian | `code--it` | Italiano |
+    | Norwegian | `code--no` | Norsk |
+    | Polish | `code--pl` | Polski |
+    | Portuguese (Brazil) | `code--pt-br` | Português Brasileiro |
+    | Romanian | `code--ro` | Română |
+    | Russian | `code--ru` | Русский |
+    | Spanish | `code--es` | Español |
+    | Swedish | `code--sv` | Svenska |
+    | Turkish | `code--tr` | Türkçe |
+    | Ukrainian | `code--uk` | Українська |
+  </Tab>
+  <Tab title="Asian and Middle Eastern languages">
+    | Language | Mode ID | Native name |
+    |----------|---------|-------------|
+    | Arabic | `code--ar` | العربية |
+    | Bengali | `code--bn` | বাংলা |
+    | Chinese | `code--zh` | 中文 |
+    | Hebrew | `code--he` | עברית |
+    | Hindi | `code--hi` | हिन्दी |
+    | Indonesian | `code--id` | Bahasa Indonesia |
+    | Japanese | `code--ja` | 日本語 |
+    | Korean | `code--ko` | 한국어 |
+    | Thai | `code--th` | ภาษาไทย |
+    | Urdu | `code--ur` | اردو |
+    | Vietnamese | `code--vi` | Tiếng Việt |
+  </Tab>
+</Tabs>
+
+---
+
+### Email investigation mode
+
+A specialized mode for analyzing email dumps such as FOIA releases and corporate archives. Focuses on identifying entities, relationships, timeline events, and key topics rather than code changes.
+
+**Mode ID:** `email-investigation`
+
+**Observation types:**
+
+| Type | Description |
+|------|-------------|
+| `entity` | Person, organization, or email address |
+| `relationship` | Connection between entities |
+| `timeline-event` | Time-stamped event in a communication sequence |
+| `evidence` | Supporting documentation or proof |
+| `anomaly` | Suspicious pattern or irregularity |
+| `conclusion` | Investigative finding or determination |
+
+### Law study mode
+
+A specialized mode for legal education — case briefing, doctrine synthesis, and exam preparation. Captures case holdings, legal rules, issue patterns, and professor frameworks rather than code changes.
+
+**Mode ID:** `law-study`
+
+**Chill variant:** `law-study--chill`
+
+**Observation types:**
+
+| Type | Description |
+|------|-------------|
+| `case-holding` | Case brief (2–3 sentences: key facts + holding) with extracted legal rule |
+| `issue-pattern` | Exam trigger or fact pattern that signals a legal issue to spot |
+| `prof-framework` | Professor's analytical lens, emphasis, or approach to a topic or doctrine |
+| `doctrine-rule` | Legal test, standard, or doctrine synthesized from cases, statutes, or restatements |
+| `argument-structure` | Legal argument or counter-argument worked through with analytical steps |
+| `cross-case-connection` | Insight linking multiple cases, doctrines, or topics that reveals a deeper principle |
+
+**Observation concepts:** `exam-relevant`, `minority-position`, `gotcha`, `unsettled-law`, `policy-rationale`, `course-theme`
+
+---
+
+## Mode inheritance
+
+The system supports inheritance using the `--` separator in mode IDs. For example, `code--es` is resolved as:
+
+1. Load `code` (parent) configuration
+2. Load `code--es` (child) configuration
+3. Merge child into parent — child values override parent values
+
+This allows lightweight "remix" modes that change only specific aspects (like the language prompt) while keeping the core mode definition intact.
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--es"
+}
+```
+
+This is equivalent to Spanish code mode — all observation types and concepts from `code` mode, with all memory output generated in Spanish.
+
+## Examples
+
+<AccordionGroup>
+  <Accordion title="Switch to French">
+    ```json
+    {
+      "CLAUDE_MEM_MODE": "code--fr"
+    }
+    ```
+
+    All future observations, session summaries, and titles will be generated in French.
+  </Accordion>
+
+  <Accordion title="Reduce observation volume">
+    ```json
+    {
+      "CLAUDE_MEM_MODE": "code--chill"
+    }
+    ```
+
+    Only significant moments are recorded: shipped features, architectural decisions, and non-obvious gotchas.
+  </Accordion>
+
+  <Accordion title="Investigate email archives">
+    ```json
+    {
+      "CLAUDE_MEM_MODE": "email-investigation"
+    }
+    ```
+
+    Switches observation types to entities, relationships, timeline events, evidence, anomalies, and conclusions.
+  </Accordion>
+
+  <Accordion title="Switch to law study mode">
+    ```json
+    {
+      "CLAUDE_MEM_MODE": "law-study"
+    }
+    ```
+
+    Observation types change to case holdings, issue patterns, doctrine rules, professor frameworks, argument structures, and cross-case connections. Designed for law students briefing cases and synthesizing doctrine.
+  </Accordion>
+
+  <Accordion title="Set via environment variable (temporary)">
+    ```bash
+    export CLAUDE_MEM_MODE="code--ja"
+    ```
+
+    Useful for a single session without changing your persistent settings file.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Full settings reference including CLAUDE_MEM_MODE
+  </Card>
+  <Card title="Getting started" icon="rocket" href="/usage/getting-started">
+    Set up Claude Mem for the first time
+  </Card>
+</CardGroup>

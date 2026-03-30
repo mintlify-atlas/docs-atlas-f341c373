@@ -1,0 +1,218 @@
+---
+title: "Gemini Provider"
+description: "Use Google's Gemini API as an alternative to Claude for observation extraction, with a generous free tier."
+---
+
+Claude Mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. This can significantly reduce costs since Gemini offers a generous free tier.
+
+<Warning>
+  **Free tier rate limits**: Without billing enabled, Gemini enforces strict rate limits (5–10 RPM). Enable billing on your Google Cloud project to unlock 1,000–4,000 RPM while still using the free quota.
+</Warning>
+
+## Why use Gemini?
+
+<Columns cols={2}>
+  <Card title="Cost savings" icon="piggy-bank">
+    The free tier covers most individual usage patterns with no credit card required to get started.
+  </Card>
+  <Card title="Same observation quality" icon="check">
+    Gemini extracts observations using the same XML format as Claude, so output is compatible throughout.
+  </Card>
+  <Card title="Seamless fallback" icon="rotate">
+    Automatically falls back to Claude if Gemini is unavailable due to rate limiting or errors.
+  </Card>
+  <Card title="Hot-swappable" icon="bolt">
+    Switch providers without restarting the worker. Changes take effect on the next observation.
+  </Card>
+</Columns>
+
+## Getting a free API key
+
+<Steps>
+  <Step title="Open Google AI Studio">
+    Go to the [Google AI Studio API Key page](https://aistudio.google.com/app/apikey) and sign in with your Google account.
+  </Step>
+  <Step title="Accept terms">
+    Accept the Terms of Service and privacy policies when prompted.
+  </Step>
+  <Step title="Create the key">
+    Click **Create API key**, then choose an existing Google Cloud project or create a new one.
+  </Step>
+  <Step title="Copy and store your key">
+    Copy the generated API key and store it somewhere secure — you won't be able to view it again.
+  </Step>
+</Steps>
+
+<Tip>
+  No billing is required to get started. Enable billing on your Google Cloud project to unlock much higher rate limits (1,000–4,000 RPM vs. 5–10 RPM) while remaining within the free quota.
+</Tip>
+
+## Available models
+
+| Model | Free tier RPM | Notes |
+|---|---|---|
+| `gemini-2.5-flash-lite` | 10 | Default — recommended for free tier (highest RPM) |
+| `gemini-2.5-flash` | 5 | Higher capability, lower rate limit |
+| `gemini-3-flash-preview` | 5 | Latest model, lower rate limit |
+
+### Rate limits with billing enabled
+
+Enabling billing on your Google Cloud project does not incur charges within the free quota but dramatically raises rate limits:
+
+| Model | RPM | TPM |
+|---|---|---|
+| `gemini-2.5-flash-lite` | 4,000 | 4M |
+| `gemini-2.5-flash` | 1,000 | 1M |
+| `gemini-3-flash-preview` | 1,000 | 1M |
+
+## Configuration
+
+### Settings reference
+
+<ParamField path="CLAUDE_MEM_PROVIDER" type="string" default="claude">
+  AI provider for observation extraction. Set to `gemini` to use the Gemini API.
+</ParamField>
+
+<ParamField path="CLAUDE_MEM_GEMINI_API_KEY" type="string">
+  Your Gemini API key. Takes precedence over the `GEMINI_API_KEY` environment variable.
+</ParamField>
+
+<ParamField path="CLAUDE_MEM_GEMINI_MODEL" type="string" default="gemini-2.5-flash-lite">
+  Gemini model to use. Supported values: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash-preview`.
+</ParamField>
+
+<ParamField path="CLAUDE_MEM_GEMINI_BILLING_ENABLED" type="boolean" default="false">
+  Set to `true` to skip built-in rate-limit delays when billing is enabled on your Google Cloud project.
+</ParamField>
+
+### Using the settings UI
+
+<Steps>
+  <Step title="Open the viewer">
+    Go to [http://localhost:37777](http://localhost:37777) and click the **gear icon** to open Settings.
+  </Step>
+  <Step title="Select Gemini">
+    Under **AI Provider**, select **Gemini** from the dropdown.
+  </Step>
+  <Step title="Enter your API key">
+    Paste your Gemini API key into the **Gemini API Key** field.
+  </Step>
+  <Step title="Choose a model (optional)">
+    Select a model from the dropdown. `gemini-2.5-flash-lite` is recommended for the free tier.
+  </Step>
+</Steps>
+
+Settings are applied immediately — no restart required.
+
+### Manual configuration
+
+Edit `~/.claude-mem/settings.json`:
+
+```json settings.json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
+}
+```
+
+Alternatively, set the API key via environment variable:
+
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+```
+
+<Note>
+  The settings file takes precedence over the `GEMINI_API_KEY` environment variable.
+</Note>
+
+## Switching providers
+
+You can switch between Claude and Gemini at any time.
+
+<Tabs>
+  <Tab title="Via settings UI">
+    <Steps>
+      <Step title="Open Settings">
+        Open the viewer at [http://localhost:37777](http://localhost:37777) and click the gear icon.
+      </Step>
+      <Step title="Change provider">
+        Change the **AI Provider** dropdown to **Gemini** (or back to **Claude**).
+      </Step>
+      <Step title="Observe the change">
+        The next observation will use the new provider. No restart is needed.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Via settings file">
+    Edit `~/.claude-mem/settings.json` and change the `CLAUDE_MEM_PROVIDER` value:
+
+    ```json settings.json
+    {
+      "CLAUDE_MEM_PROVIDER": "gemini"
+    }
+    ```
+
+    The change takes effect on the next observation without a restart.
+  </Tab>
+</Tabs>
+
+- **No restart required**: Changes take effect on the next observation.
+- **Conversation history preserved**: When switching mid-session, the new provider sees the full conversation context.
+- **Seamless transition**: Both providers use the same observation format.
+
+## Fallback behavior
+
+If Gemini encounters errors, Claude Mem automatically falls back to the Claude Agent SDK.
+
+<AccordionGroup>
+  <Accordion title="Conditions that trigger fallback">
+    - Rate limiting (HTTP 429)
+    - Server errors (HTTP 5xx)
+    - Network issues (connection refused, timeout)
+
+    When fallback occurs, a warning is logged, any in-progress messages are reset to pending, and the Claude SDK takes over with the full conversation context.
+  </Accordion>
+  <Accordion title="Conditions that do not trigger fallback">
+    - **Missing API key**: Logs a warning and uses Claude from the start (no mid-session switch).
+    - **Invalid API key**: Fails with an error rather than silently switching.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title='"Gemini API key not configured"'>
+    You need to supply the API key in one of two ways:
+
+    - Set `CLAUDE_MEM_GEMINI_API_KEY` in `~/.claude-mem/settings.json`, **or**
+    - Set the `GEMINI_API_KEY` environment variable
+
+    The settings file takes precedence if both are present.
+  </Accordion>
+  <Accordion title="Rate limiting">
+    Without billing enabled, Claude Mem enforces built-in delays between requests to stay within the free quota. Processing may be slower but remains within limits.
+
+    To resolve rate limiting:
+    - Enable billing on your Google Cloud project and set `CLAUDE_MEM_GEMINI_BILLING_ENABLED` to `true`
+    - Switch to `gemini-2.5-flash-lite`, which has the highest free RPM (10 RPM)
+    - Fall back to Claude as your primary provider while Gemini recovers
+
+    Claude Mem automatically falls back to the Claude SDK when a 429 rate limit response is received.
+  </Accordion>
+  <Accordion title="Lower observation quality">
+    Claude typically produces slightly higher quality observations than Gemini. If observation quality is important for a specific project, consider using Claude as the provider for that work and Gemini for lower-stakes sessions where cost savings matter more.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="OpenRouter provider" icon="network-wired" href="/usage/openrouter-provider">
+    Access 100+ models through OpenRouter's unified API, including several free options.
+  </Card>
+  <Card title="Configuration reference" icon="gear" href="/configuration">
+    Full settings reference for all Claude Mem configuration options.
+  </Card>
+</Columns>

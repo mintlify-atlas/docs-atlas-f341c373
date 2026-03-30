@@ -1,0 +1,380 @@
+---
+title: "Database Architecture"
+description: "SQLite3 schema, FTS5 virtual tables, SessionStore CRUD operations, and data directory structure"
+---
+
+# Database architecture
+
+Claude-Mem uses SQLite 3 with the `bun:sqlite` native module for persistent storage. FTS5 virtual tables provide full-text search across observations, summaries, and user prompts.
+
+## Database location
+
+```plaintext
+~/.claude-mem/claude-mem.db
+```
+
+The database runs in WAL (Write-Ahead Logging) mode for concurrent reads and writes.
+
+## Implementation
+
+**Primary**: `bun:sqlite` (native SQLite module)
+
+- Used by `SessionStore` and `SessionSearch`
+- Synchronous API for better performance
+- WAL mode enabled: `PRAGMA journal_mode = WAL`
+
+<Note>
+  `Database.ts` using `bun:sqlite` is legacy code. The canonical implementation is `SessionStore.ts` and `SessionSearch.ts`.
+</Note>
+
+## Core tables
+
+### `sdk_sessions`
+
+Tracks active and completed sessions.
+
+```sql
+CREATE TABLE sdk_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT UNIQUE NOT NULL,
+  claude_session_id TEXT,
+  project TEXT NOT NULL,
+  prompt_counter INTEGER DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+  completed_at TEXT,
+  completed_at_epoch INTEGER,
+  last_activity_at TEXT,
+  last_activity_epoch INTEGER
+);
+```
+
+**Indexes**:
+
+| Index | Column |
+|---|---|
+| `idx_sdk_sessions_claude_session` | `claude_session_id` |
+| `idx_sdk_sessions_project` | `project` |
+| `idx_sdk_sessions_status` | `status` |
+| `idx_sdk_sessions_created_at` | `created_at_epoch DESC` |
+
+### `observations`
+
+Individual tool executions with hierarchical AI-extracted structure.
+
+```sql
+CREATE TABLE observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  sdk_session_id TEXT NOT NULL,
+  claude_session_id TEXT,
+  project TEXT NOT NULL,
+  prompt_number INTEGER,
+  tool_name TEXT NOT NULL,
+  correlation_id TEXT,
+
+  -- Hierarchical fields (AI-extracted)
+  title TEXT,
+  subtitle TEXT,
+  narrative TEXT,
+  text TEXT,
+  facts TEXT,
+  concepts TEXT,
+  type TEXT,
+  files_read TEXT,
+  files_modified TEXT,
+
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+
+  FOREIGN KEY (sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
+);
+```
+
+**Observation types**:
+
+| Type | Description |
+|---|---|
+| `decision` | Architectural or design decisions |
+| `bugfix` | Bug fixes and corrections |
+| `feature` | New features or capabilities |
+| `refactor` | Code refactoring and cleanup |
+| `discovery` | Learnings about the codebase |
+| `change` | General changes and modifications |
+
+**Indexes**:
+
+| Index | Column |
+|---|---|
+| `idx_observations_session` | `session_id` |
+| `idx_observations_sdk_session` | `sdk_session_id` |
+| `idx_observations_project` | `project` |
+| `idx_observations_tool_name` | `tool_name` |
+| `idx_observations_created_at` | `created_at_epoch DESC` |
+| `idx_observations_type` | `type` |
+
+### `session_summaries`
+
+AI-generated session summaries. Multiple summaries can exist per session.
+
+```sql
+CREATE TABLE session_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT NOT NULL,
+  claude_session_id TEXT,
+  project TEXT NOT NULL,
+  prompt_number INTEGER,
+
+  -- Summary fields
+  request TEXT,
+  investigated TEXT,
+  learned TEXT,
+  completed TEXT,
+  next_steps TEXT,
+  notes TEXT,
+
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+
+  FOREIGN KEY (sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
+);
+```
+
+**Indexes**:
+
+| Index | Column |
+|---|---|
+| `idx_session_summaries_sdk_session` | `sdk_session_id` |
+| `idx_session_summaries_project` | `project` |
+| `idx_session_summaries_created_at` | `created_at_epoch DESC` |
+
+### `user_prompts`
+
+Raw user prompts with FTS5 search support (added in v4.2.0).
+
+```sql
+CREATE TABLE user_prompts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT NOT NULL,
+  claude_session_id TEXT,
+  project TEXT NOT NULL,
+  prompt_number INTEGER,
+  prompt_text TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+
+  FOREIGN KEY (sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
+);
+```
+
+**Indexes**:
+
+| Index | Column |
+|---|---|
+| `idx_user_prompts_sdk_session` | `sdk_session_id` |
+| `idx_user_prompts_project` | `project` |
+| `idx_user_prompts_created_at` | `created_at_epoch DESC` |
+
+### Legacy tables
+
+The following tables exist for backward compatibility with v3.x installations and are no longer written to:
+
+- `sessions` — Legacy session tracking
+- `memories` — Legacy compressed memory chunks
+- `overviews` — Legacy session summaries
+
+## FTS5 full-text search
+
+SQLite FTS5 virtual tables enable fast full-text search across observations, summaries, and user prompts.
+
+<Note>
+  FTS5 tables are maintained for backward compatibility but vector search via ChromaDB is now the primary search mechanism. FTS5 may be unavailable on some platforms (e.g., Bun on Windows). When unavailable, search falls back to ChromaDB and `LIKE` queries.
+</Note>
+
+### FTS5 virtual tables
+
+#### `observations_fts`
+
+```sql
+CREATE VIRTUAL TABLE observations_fts USING fts5(
+  title,
+  subtitle,
+  narrative,
+  text,
+  facts,
+  concepts,
+  content='observations',
+  content_rowid='id'
+);
+```
+
+#### `session_summaries_fts`
+
+```sql
+CREATE VIRTUAL TABLE session_summaries_fts USING fts5(
+  request,
+  investigated,
+  learned,
+  completed,
+  next_steps,
+  notes,
+  content='session_summaries',
+  content_rowid='id'
+);
+```
+
+#### `user_prompts_fts`
+
+```sql
+CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+  prompt_text,
+  content='user_prompts',
+  content_rowid='id'
+);
+```
+
+### Automatic synchronization
+
+FTS5 tables stay synchronized with their source tables via SQL triggers:
+
+```sql
+-- Insert trigger
+CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+  INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+  VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+END;
+
+-- Update trigger
+CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+  INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+  VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+  INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+  VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+END;
+
+-- Delete trigger
+CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+  INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+  VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+END;
+```
+
+Equivalent triggers exist for `session_summaries_fts` and `user_prompts_fts`.
+
+### FTS5 query syntax
+
+FTS5 supports a rich query language:
+
+| Syntax | Example | Meaning |
+|---|---|---|
+| Simple term | `authentication` | Match word |
+| Phrase | `"error handling"` | Match exact phrase |
+| AND | `"error" AND "handling"` | Both terms required |
+| OR | `"bug" OR "fix"` | Either term |
+| NOT | `"bug" NOT "feature"` | Exclude term |
+| Column scoped | `title:"authentication"` | Search specific column |
+
+### Security
+
+All FTS5 queries are escaped before processing to prevent injection attacks:
+
+```typescript
+function escapeFTS5Query(query: string): string {
+  return query.replace(/"/g, '""');
+}
+```
+
+<Info>
+  The FTS5 injection prevention has a test suite covering 332 attack patterns including special characters, SQL keywords, quote escaping, and boolean operators.
+</Info>
+
+## Database classes
+
+### `SessionStore`
+
+CRUD operations for sessions, observations, summaries, and user prompts.
+
+**Location**: `src/services/sqlite/SessionStore.ts`
+
+<AccordionGroup>
+  <Accordion title="Session methods">
+    - `createSession()` — Create a new SDK session record
+    - `getSession()` — Retrieve session by ID
+    - `updateSession()` — Update session fields (status, counters)
+  </Accordion>
+
+  <Accordion title="Observation methods">
+    - `createObservation()` — Store a processed observation
+    - `getObservations()` — Retrieve observations with pagination and filters
+  </Accordion>
+
+  <Accordion title="Summary methods">
+    - `createSummary()` — Store an AI-generated session summary
+    - `getSummaries()` — Retrieve summaries with pagination and filters
+  </Accordion>
+
+  <Accordion title="User prompt methods">
+    - `createUserPrompt()` — Store a raw user prompt
+  </Accordion>
+</AccordionGroup>
+
+### `SessionSearch`
+
+FTS5 full-text search with 8 specialized search methods.
+
+**Location**: `src/services/sqlite/SessionSearch.ts`
+
+| Method | Description |
+|---|---|
+| `searchObservations()` | Full-text search across observation fields |
+| `searchSessions()` | Full-text search across session summaries |
+| `searchUserPrompts()` | Full-text search across user prompts |
+| `findByConcept()` | Filter by concept tags |
+| `findByFile()` | Filter by file references |
+| `findByType()` | Filter by observation type |
+| `getRecentContext()` | Retrieve recent session context |
+| `advancedSearch()` | Combined filter query |
+
+## Migration history
+
+Database schema is managed via `src/services/sqlite/migrations.ts`.
+
+| Migration | Changes |
+|---|---|
+| 001 | Initial schema: sessions, memories, overviews, diagnostics, transcript_events |
+| 002 | Hierarchical memory fields: title, subtitle, facts, concepts, files_touched |
+| 003 | SDK sessions and observations tables |
+| 004 | Session summaries table |
+| 005 | Multi-prompt sessions: prompt_counter, prompt_number |
+| 006 | FTS5 virtual tables and triggers |
+| 007–010 | Various improvements and user_prompts table |
+
+## Data directory structure
+
+```plaintext
+~/.claude-mem/
+├── claude-mem.db              # SQLite database (bun:sqlite)
+├── worker.pid                 # Worker process PID
+├── settings.json              # User settings
+├── chroma/                    # ChromaDB vector embeddings
+└── logs/
+    └── worker-YYYY-MM-DD.log  # Daily rotating logs
+```
+
+## Performance considerations
+
+<CardGroup cols={2}>
+  <Card title="Indexes" icon="bolt">
+    All foreign keys and frequently queried columns have explicit indexes, avoiding full table scans.
+  </Card>
+  <Card title="FTS5" icon="magnifying-glass">
+    Full-text search is significantly faster than `LIKE` queries for text matching.
+  </Card>
+  <Card title="Triggers" icon="refresh">
+    Automatic FTS5 synchronization via triggers adds minimal overhead to write operations.
+  </Card>
+  <Card title="WAL mode" icon="layers">
+    Write-Ahead Logging allows concurrent reads without blocking writes.
+  </Card>
+</CardGroup>

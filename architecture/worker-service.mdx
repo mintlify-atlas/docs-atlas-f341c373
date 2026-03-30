@@ -1,0 +1,647 @@
+---
+title: "Worker Service"
+description: "Express HTTP server, API endpoints, SSE real-time updates, and Bun process management"
+---
+
+# Worker service
+
+The worker service is a long-running HTTP API built with Express.js and managed natively by Bun. It processes observations through the Claude Agent SDK separately from hook execution to prevent timeout issues.
+
+## Overview
+
+<CardGroup cols={2}>
+  <Card title="Technology" icon="server">
+    Express.js HTTP server with 22 endpoints across six categories
+  </Card>
+  <Card title="Runtime" icon="bolt">
+    Bun (auto-installed if missing via `smart-install.js`)
+  </Card>
+  <Card title="Port" icon="plug">
+    Fixed port 37777, configurable via `CLAUDE_MEM_WORKER_PORT`
+  </Card>
+  <Card title="Model" icon="brain">
+    Configurable via `CLAUDE_MEM_MODEL` environment variable (default: sonnet)
+  </Card>
+</CardGroup>
+
+| Property | Value |
+|---|---|
+| **Source** | `src/services/worker-service.ts` |
+| **Built output** | `plugin/scripts/worker-service.cjs` |
+| **Process manager** | Native Bun `ProcessManager` |
+| **PID file** | `~/.claude-mem/worker.pid` |
+
+## REST API endpoints
+
+The worker service exposes 22 HTTP endpoints organized into six categories.
+
+### Viewer and health endpoints
+
+<AccordionGroup>
+  <Accordion title="GET / — Viewer UI">
+    Serves the web-based viewer UI (v5.1.0+).
+
+    **Response**: HTML page with embedded React application
+
+    **Features**:
+    - Real-time memory stream visualization
+    - Infinite scroll pagination
+    - Project filtering
+    - SSE-based live updates
+    - Theme toggle (light/dark, v5.1.2+)
+  </Accordion>
+
+  <Accordion title="GET /health — Health check">
+    Worker health status check.
+
+    **Response**:
+
+    ```json
+    {
+      "status": "ok",
+      "uptime": 12345,
+      "port": 37777
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="GET /stream — Server-Sent Events">
+    Real-time update stream for the viewer UI.
+
+    **Response**: SSE stream emitting three event types:
+
+    | Event | When fired |
+    |---|---|
+    | `observation-created` | New observation added |
+    | `session-summary-created` | New summary generated |
+    | `user-prompt-created` | New prompt recorded |
+
+    **Event format**:
+
+    ```plaintext
+    event: observation-created
+    data: {"id": 123, "title": "...", ...}
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Data retrieval endpoints
+
+<AccordionGroup>
+  <Accordion title="GET /api/prompts — Get prompts (paginated)">
+    Retrieve paginated user prompts.
+
+    **Query parameters**:
+
+    | Parameter | Default | Description |
+    |---|---|---|
+    | `project` | — | Filter by project name |
+    | `limit` | `20` | Number of results |
+    | `offset` | `0` | Pagination offset |
+
+    **Response**:
+
+    ```json
+    {
+      "prompts": [{
+        "id": 1,
+        "session_id": "abc123",
+        "prompt": "User's prompt text",
+        "prompt_number": 1,
+        "created_at": "2025-11-06T10:30:00Z"
+      }],
+      "total": 150,
+      "hasMore": true
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="GET /api/observations — Get observations (paginated)">
+    Retrieve paginated observations.
+
+    **Query parameters**:
+
+    | Parameter | Default | Description |
+    |---|---|---|
+    | `project` | — | Filter by project name |
+    | `limit` | `20` | Number of results |
+    | `offset` | `0` | Pagination offset |
+
+    **Response**:
+
+    ```json
+    {
+      "observations": [{
+        "id": 123,
+        "title": "Fix authentication bug",
+        "type": "bugfix",
+        "narrative": "...",
+        "created_at": "2025-11-06T10:30:00Z"
+      }],
+      "total": 500,
+      "hasMore": true
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="GET /api/summaries — Get summaries (paginated)">
+    Retrieve paginated session summaries.
+
+    **Query parameters**:
+
+    | Parameter | Default | Description |
+    |---|---|---|
+    | `project` | — | Filter by project name |
+    | `limit` | `20` | Number of results |
+    | `offset` | `0` | Pagination offset |
+
+    **Response**:
+
+    ```json
+    {
+      "summaries": [{
+        "id": 456,
+        "session_id": "abc123",
+        "request": "User's original request",
+        "completed": "Work finished",
+        "created_at": "2025-11-06T10:30:00Z"
+      }],
+      "total": 100,
+      "hasMore": true
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="GET /api/observation/:id — Get observation by ID">
+    Retrieve a single observation by its ID.
+
+    **Path parameters**: `id` (required) — observation ID
+
+    **Response**:
+
+    ```json
+    {
+      "id": 123,
+      "sdk_session_id": "abc123",
+      "project": "my-project",
+      "type": "bugfix",
+      "title": "Fix authentication bug",
+      "narrative": "...",
+      "created_at": "2025-11-06T10:30:00Z",
+      "created_at_epoch": 1730886600000
+    }
+    ```
+
+    **Error** (404): `{"error": "Observation #123 not found"}`
+  </Accordion>
+
+  <Accordion title="POST /api/observations/batch — Get observations by IDs">
+    Retrieve multiple observations by their IDs in a single request. Used by the `get_observations` MCP tool.
+
+    **Request body**:
+
+    ```json
+    {
+      "ids": [123, 456, 789],
+      "orderBy": "date_desc",
+      "limit": 10,
+      "project": "my-project"
+    }
+    ```
+
+    | Field | Required | Description |
+    |---|---|---|
+    | `ids` | Yes | Array of observation IDs |
+    | `orderBy` | No | `date_desc` or `date_asc` (default: `date_desc`) |
+    | `limit` | No | Maximum results to return |
+    | `project` | No | Filter by project name |
+
+    **Response**: Array of full observation objects ordered by `orderBy`.
+
+    **Error responses**:
+    - `400`: `{"error": "ids must be an array of numbers"}`
+    - `400`: `{"error": "All ids must be integers"}`
+  </Accordion>
+
+  <Accordion title="GET /api/session/:id — Get session by ID">
+    Retrieve a single session by its ID.
+
+    **Response**:
+
+    ```json
+    {
+      "id": 456,
+      "sdk_session_id": "abc123",
+      "project": "my-project",
+      "request": "User's original request",
+      "completed": "Work finished",
+      "created_at": "2025-11-06T10:30:00Z"
+    }
+    ```
+
+    **Error** (404): `{"error": "Session #456 not found"}`
+  </Accordion>
+
+  <Accordion title="GET /api/prompt/:id — Get prompt by ID">
+    Retrieve a single user prompt by its ID.
+
+    **Response**:
+
+    ```json
+    {
+      "id": 1,
+      "session_id": "abc123",
+      "prompt": "User's prompt text",
+      "prompt_number": 1,
+      "created_at": "2025-11-06T10:30:00Z"
+    }
+    ```
+
+    **Error** (404): `{"error": "Prompt #1 not found"}`
+  </Accordion>
+
+  <Accordion title="GET /api/stats — Database statistics">
+    Get database statistics broken down by project.
+
+    **Response**:
+
+    ```json
+    {
+      "byProject": {
+        "my-project": {
+          "observations": 245,
+          "summaries": 12,
+          "prompts": 48
+        }
+      },
+      "total": {
+        "observations": 401,
+        "summaries": 20,
+        "prompts": 80,
+        "sessions": 20
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="GET /api/projects — List projects">
+    Get the list of distinct project names from observations.
+
+    **Response**:
+
+    ```json
+    {
+      "projects": ["my-project", "other-project", "test-project"]
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Search endpoints
+
+<AccordionGroup>
+  <Accordion title="GET /api/search — Full-text search">
+    Main search endpoint used by the `search` MCP tool. Queries FTS5 virtual tables via the `SessionSearch` service.
+
+    **Query parameters**:
+
+    | Parameter | Description |
+    |---|---|
+    | `query` | Full-text search query |
+    | `limit` | Maximum results (default: 20) |
+    | `type` | Filter by observation type |
+    | `project` | Filter by project name |
+    | `dateStart`, `dateEnd` | Date range filters |
+    | `offset` | Pagination offset |
+    | `orderBy` | Sort order |
+
+    **Response**: Compact index with IDs, titles, dates, and types (~50–100 tokens per result).
+  </Accordion>
+
+  <Accordion title="GET /api/timeline — Timeline context">
+    Get chronological context around a specific observation. Used by the `timeline` MCP tool.
+
+    **Query parameters**:
+
+    | Parameter | Description |
+    |---|---|
+    | `anchor` | Observation ID to center timeline around |
+    | `query` | Search query to find anchor automatically |
+    | `depth_before` | Observations before anchor (default: 3) |
+    | `depth_after` | Observations after anchor (default: 3) |
+    | `project` | Filter by project name |
+
+    Either `anchor` or `query` must be provided.
+
+    **Response**: Chronological view showing what happened before, during, and after the anchor point.
+  </Accordion>
+</AccordionGroup>
+
+### Settings endpoints
+
+<AccordionGroup>
+  <Accordion title="GET /api/settings — Retrieve settings">
+    **Response**:
+
+    ```json
+    {
+      "sidebarOpen": true,
+      "selectedProject": "my-project",
+      "theme": "dark"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="POST /api/settings — Save settings">
+    **Request body**:
+
+    ```json
+    {
+      "sidebarOpen": false,
+      "selectedProject": "other-project",
+      "theme": "light"
+    }
+    ```
+
+    **Response**: `{"success": true}`
+  </Accordion>
+</AccordionGroup>
+
+### Queue management endpoints
+
+<AccordionGroup>
+  <Accordion title="GET /api/pending-queue — Queue status">
+    View current processing queue status and identify stuck messages.
+
+    **Response**:
+
+    ```json
+    {
+      "queue": {
+        "messages": [{
+          "id": 123,
+          "session_db_id": 45,
+          "claude_session_id": "abc123",
+          "message_type": "observation",
+          "status": "pending",
+          "retry_count": 0,
+          "created_at_epoch": 1730886600000,
+          "started_processing_at_epoch": null,
+          "completed_at_epoch": null
+        }],
+        "totalPending": 5,
+        "totalProcessing": 2,
+        "totalFailed": 0,
+        "stuckCount": 1
+      },
+      "recentlyProcessed": [...],
+      "sessionsWithPendingWork": [44, 45, 46]
+    }
+    ```
+
+    **Status definitions**:
+
+    | Status | Meaning |
+    |---|---|
+    | `pending` | Queued, not yet processed |
+    | `processing` | Currently being processed by SDK agent |
+    | `processed` | Completed successfully |
+    | `failed` | Failed after 3 retry attempts |
+
+    <Note>
+      Messages in `processing` status for more than 5 minutes are counted in `stuckCount`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="POST /api/pending-queue/process — Trigger manual recovery">
+    Manually trigger processing of pending queues. As of v5.x, automatic recovery on startup is disabled by default.
+
+    **Request body**:
+
+    ```json
+    {
+      "sessionLimit": 10
+    }
+    ```
+
+    `sessionLimit` is optional (default: 10, max: 100).
+
+    **Response**:
+
+    ```json
+    {
+      "success": true,
+      "totalPendingSessions": 15,
+      "sessionsStarted": 10,
+      "sessionsSkipped": 2,
+      "startedSessionIds": [44, 45, 46, 47, 48, 49, 50, 51, 52, 53]
+    }
+    ```
+
+    **Behavior**: Starts non-blocking SDK agents for each session. Returns immediately; processing continues in the background. Sessions already actively processing are skipped to prevent duplicates.
+  </Accordion>
+</AccordionGroup>
+
+### Session management endpoints
+
+<AccordionGroup>
+  <Accordion title="POST /sessions/:sessionDbId/init — Initialize session">
+    **Request body**:
+
+    ```json
+    {
+      "sdk_session_id": "abc-123",
+      "project": "my-project"
+    }
+    ```
+
+    **Response**: `{"success": true, "session_id": "abc-123"}`
+  </Accordion>
+
+  <Accordion title="POST /sessions/:sessionDbId/observations — Add observation">
+    **Request body**:
+
+    ```json
+    {
+      "tool_name": "Read",
+      "tool_input": {},
+      "tool_result": "...",
+      "correlation_id": "xyz-789"
+    }
+    ```
+
+    **Response**: `{"success": true, "observation_id": 123}`
+  </Accordion>
+
+  <Accordion title="POST /sessions/:sessionDbId/summarize — Generate summary">
+    **Request body**: `{"trigger": "stop"}`
+
+    **Response**: `{"success": true, "summary_id": 456}`
+  </Accordion>
+
+  <Accordion title="GET /sessions/:sessionDbId/status — Session status">
+    **Response**:
+
+    ```json
+    {
+      "session_id": "abc-123",
+      "status": "active",
+      "observation_count": 42,
+      "summary_count": 1
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="DELETE /sessions/:sessionDbId — Delete session">
+    **Response**: `{"success": true}`
+
+    <Warning>
+      As of v4.1.0, the cleanup hook no longer calls this endpoint. Sessions are marked complete instead of deleted to allow graceful worker shutdown and preserve history.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## SSE real-time updates
+
+The `/stream` endpoint implements Server-Sent Events to push live updates to the viewer UI. Clients connect once and receive a continuous event stream without polling.
+
+```typescript
+// Client connection
+const eventSource = new EventSource('http://localhost:37777/stream');
+
+eventSource.addEventListener('observation-created', (e) => {
+  const observation = JSON.parse(e.data);
+  // Update UI with new observation
+});
+
+eventSource.addEventListener('session-summary-created', (e) => {
+  const summary = JSON.parse(e.data);
+  // Update UI with new summary
+});
+```
+
+The viewer UI uses SSE-based live updates combined with infinite scroll pagination and automatic deduplication to display the memory stream in real time.
+
+## Bun process management
+
+The worker is managed by the native `ProcessManager` class, which handles:
+
+- Process spawning with the Bun runtime
+- PID file tracking at `~/.claude-mem/worker.pid`
+- Health checks with automatic retry
+- Graceful shutdown with SIGTERM / SIGKILL fallback
+
+### Commands
+
+```bash
+# Start worker (auto-starts on first session)
+npm run worker:start
+
+# Stop worker
+npm run worker:stop
+
+# Restart worker
+npm run worker:restart
+
+# View logs
+npm run worker:logs
+
+# Check status
+npm run worker:status
+```
+
+### Auto-start behavior
+
+The worker service auto-starts when the SessionStart hook (`context-hook`) fires. Manual start is optional.
+
+### Bun installation
+
+Bun is required to run the worker service. If Bun is not present, `smart-install.js` installs it automatically on first run:
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    curl -fsSL https://bun.sh/install | bash
+    # or
+    brew install oven-sh/bun/bun
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    powershell -c "irm bun.sh/install.ps1 | iex"
+    # or
+    winget install Oven-sh.Bun
+    ```
+  </Tab>
+</Tabs>
+
+## Async observation processing pipeline
+
+The worker routes observations to the Claude Agent SDK for AI-powered processing asynchronously, preventing hook timeout issues.
+
+<Steps>
+  <Step title="Observation queue">
+    Raw tool executions accumulate in an in-memory queue when the `save-hook` posts to `/sessions/:id/observations`.
+  </Step>
+  <Step title="SDK processing">
+    Observations are sent to Claude via the Agent SDK. XML-structured prompts are built by `src/sdk/prompts.ts`.
+  </Step>
+  <Step title="XML parsing">
+    Claude's responses are parsed by `src/sdk/parser.ts` to extract structured fields: `title`, `subtitle`, `narrative`, `facts`, `concepts`, `type`, `files_read`, `files_modified`.
+  </Step>
+  <Step title="Database storage">
+    Processed observations are stored in SQLite. FTS5 triggers automatically keep virtual tables in sync.
+  </Step>
+</Steps>
+
+### SDK components
+
+| File | Responsibility |
+|---|---|
+| `src/sdk/prompts.ts` | Builds XML-structured prompts for Claude |
+| `src/sdk/parser.ts` | Parses Claude's XML responses |
+| `src/sdk/worker.ts` | Main SDK agent loop |
+
+### Model configuration
+
+```bash
+export CLAUDE_MEM_MODEL=sonnet
+```
+
+| Shorthand | Description |
+|---|---|
+| `haiku` | Fast, cost-efficient |
+| `sonnet` | Balanced (default) |
+| `opus` | Most capable |
+
+## Port allocation
+
+- **Default**: Port 37777
+- **Override**: `CLAUDE_MEM_WORKER_PORT` environment variable
+- **Port file**: `${CLAUDE_PLUGIN_ROOT}/data/worker.port`
+
+<Warning>
+  If port 37777 is already in use, the worker will fail to start. Set a custom port via the `CLAUDE_MEM_WORKER_PORT` environment variable.
+</Warning>
+
+## Data storage
+
+```plaintext
+~/.claude-mem/
+├── claude-mem.db              # SQLite database (bun:sqlite)
+├── worker.pid                 # PID file for process tracking
+├── settings.json              # User settings
+└── logs/
+    └── worker-YYYY-MM-DD.log  # Daily rotating logs
+```
+
+## Error handling
+
+The worker implements graceful degradation:
+
+| Error type | Behavior |
+|---|---|
+| Database errors | Logged but do not crash the service |
+| SDK errors | Retried with exponential backoff |
+| Network errors | Logged and skipped |
+| Invalid input | Validated and rejected with error response |

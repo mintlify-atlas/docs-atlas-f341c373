@@ -1,0 +1,91 @@
+---
+title: "Cursor + OpenRouter Setup"
+description: "Use Claude Mem in Cursor with OpenRouter's 100+ AI models"
+---
+
+<Info>
+**Model variety:** Access Claude, GPT-4, Gemini, Llama, Mistral, and more through a single API key. Several free models are available.
+</Info>
+
+## Step 1: Get an OpenRouter API key
+
+1. Go to [openrouter.ai](https://openrouter.ai) and sign up or sign in
+2. Navigate to [API Keys](https://openrouter.ai/keys) and click **Create Key**
+3. Copy your API key
+
+## Step 2: Clone and build Claude Mem
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+bun install
+bun run build
+```
+
+## Step 3: Configure OpenRouter provider
+
+<Tabs>
+  <Tab title="Interactive setup (recommended)">
+    ```bash
+    bun run cursor:setup
+    ```
+
+    When prompted, select **OpenRouter** as your provider and paste your API key.
+  </Tab>
+  <Tab title="Manual configuration">
+    ```bash
+    mkdir -p ~/.claude-mem
+    cat > ~/.claude-mem/settings.json << 'EOF'
+    {
+      "CLAUDE_MEM_PROVIDER": "openrouter",
+      "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+    }
+    EOF
+
+    bun run cursor:install
+    bun run worker:start
+    ```
+  </Tab>
+</Tabs>
+
+## Step 4: Restart Cursor and verify
+
+```bash
+bun run worker:status
+bun run cursor:status
+```
+
+Open `http://localhost:37777` to confirm the memory viewer is running.
+
+## Recommended models
+
+| Model | Cost | Notes |
+|-------|------|-------|
+| `xiaomi/mimo-v2-flash:free` | Free | Default free model |
+| `google/gemini-2.0-flash-exp:free` | Free | Fast, capable |
+| `anthropic/claude-3-haiku` | ~$0.25/1M tokens | Fast and efficient |
+
+To specify a model, add `CLAUDE_MEM_OPENROUTER_MODEL` to your settings:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "your-key",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "google/gemini-2.0-flash-exp:free"
+}
+```
+
+<Warning>
+Paid OpenRouter models charge per token. Use free models (`:free` suffix) to avoid charges. Monitor usage at [openrouter.ai/activity](https://openrouter.ai/activity).
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Cursor Integration Overview" icon="cursor" href="/cursor/index">
+    All Cursor features and hook mappings
+  </Card>
+  <Card title="Gemini Setup" icon="google" href="/cursor/gemini-setup">
+    Free tier alternative with Google Gemini
+  </Card>
+</CardGroup>

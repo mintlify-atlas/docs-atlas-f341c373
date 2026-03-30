@@ -1,0 +1,494 @@
+---
+title: "Memory search tools"
+description: "Search your project history with MCP tools using the 3-layer progressive disclosure workflow for ~10x token savings."
+---
+
+Claude Mem provides persistent memory across sessions through **4 MCP tools** that follow a token-efficient **3-layer workflow pattern**. Instead of fetching all historical data upfront, you progressively narrow from a lightweight index to full details — fetching only what you actually need.
+
+## The 3-layer workflow
+
+<Steps>
+  <Step title="Search — get a compact index">
+    Start with `search` to get a lightweight table of IDs, titles, dates, and types. Each result costs roughly 50–100 tokens.
+
+    ```text
+    search(query="authentication bug", type="bugfix", limit=10)
+    ```
+
+    Review the index and identify which observation IDs look relevant before fetching anything further.
+  </Step>
+  <Step title="Timeline — get chronological context">
+    Use `timeline` to understand the narrative arc around interesting results — what was happening before and after a specific observation.
+
+    ```text
+    timeline(anchor=312, depth_before=3, depth_after=3)
+    ```
+
+    Or let it find the anchor automatically from a query:
+
+    ```text
+    timeline(query="authentication", depth_before=2, depth_after=2)
+    ```
+  </Step>
+  <Step title="Get observations — fetch full details">
+    Call `get_observations` only for the IDs you've confirmed are relevant. Always batch multiple IDs in a single call.
+
+    ```text
+    get_observations(ids=[123, 456, 789])
+    ```
+
+    Each full observation costs 500–1,000 tokens and includes the complete narrative, facts, files, and concepts.
+  </Step>
+</Steps>
+
+### Why this works
+
+<CardGroup cols={2}>
+  <Card title="Traditional approach" icon="triangle-exclamation">
+    Fetching 20 observations upfront: **10,000–20,000 tokens**, with roughly 10% actually useful.
+  </Card>
+  <Card title="3-layer approach" icon="check">
+    Search index + timeline + 3 full observations: **~3,000 tokens**, 100% relevant.
+  </Card>
+</CardGroup>
+
+## Tool reference
+
+### `__IMPORTANT` — workflow documentation
+
+An always-visible reminder of the 3-layer workflow pattern injected into the MCP context. It helps Claude understand how to use the search tools efficiently. You do not need to invoke it directly.
+
+---
+
+### `search` — search memory index
+
+Search your memory and get a compact index with IDs.
+
+**Parameters**
+
+<ParamField query="query" type="string">
+  Full-text search query. Supports AND, OR, NOT, phrase searches, and column-specific filters. See [FTS5 query syntax](#fts5-query-syntax) below.
+</ParamField>
+
+<ParamField query="limit" type="number" default="20">
+  Maximum number of results to return.
+</ParamField>
+
+<ParamField query="offset" type="number" default="0">
+  Skip the first N results for pagination.
+</ParamField>
+
+<ParamField query="type" type="string">
+  Filter by observation type: `bugfix`, `feature`, `decision`, `discovery`, `refactor`, or `change`.
+</ParamField>
+
+<ParamField query="obs_type" type="string">
+  Filter by record type: `observation`, `session`, or `prompt`.
+</ParamField>
+
+<ParamField query="project" type="string">
+  Filter results to a specific project name.
+</ParamField>
+
+<ParamField query="dateStart" type="string">
+  Include only results on or after this date (`YYYY-MM-DD`).
+</ParamField>
+
+<ParamField query="dateEnd" type="string">
+  Include only results on or before this date (`YYYY-MM-DD`).
+</ParamField>
+
+<ParamField query="orderBy" type="string" default="date_desc">
+  Sort order: `date_desc`, `date_asc`, or `relevance`.
+</ParamField>
+
+**Returns:** Compact index table with IDs, titles, dates, and types.
+
+**Example**
+
+```text
+search(query="database migration", type="bugfix", limit=5, orderBy="date_desc")
+```
+
+---
+
+### `timeline` — get chronological context
+
+Get a chronological view of observations around a specific point or query. Returns `depth_before + 1 + depth_after` items interleaved in chronological order.
+
+**Parameters**
+
+<ParamField query="anchor" type="number">
+  Observation ID to center the timeline around. Required if `query` is not provided.
+</ParamField>
+
+<ParamField query="query" type="string">
+  Search query to find the anchor automatically. Required if `anchor` is not provided.
+</ParamField>
+
+<ParamField query="depth_before" type="number" default="3">
+  Number of observations to include before the anchor. Maximum 20.
+</ParamField>
+
+<ParamField query="depth_after" type="number" default="3">
+  Number of observations to include after the anchor. Maximum 20.
+</ParamField>
+
+<ParamField query="project" type="string">
+  Filter results to a specific project name.
+</ParamField>
+
+**Returns:** Chronological list of observations, sessions, and prompts interleaved around the anchor.
+
+**Examples**
+
+```text
+timeline(anchor=12345, depth_before=5, depth_after=5)
+```
+
+```text
+timeline(query="implemented JWT auth", depth_before=3, depth_after=3)
+```
+
+---
+
+### `get_observations` — fetch full details
+
+Fetch complete observation details by ID. Always batch multiple IDs in a single call — one request instead of N individual requests.
+
+**Parameters**
+
+<ParamField query="ids" type="number[]" required>
+  Array of observation IDs to fetch.
+</ParamField>
+
+<ParamField query="orderBy" type="string" default="date_desc">
+  Sort order: `date_desc` or `date_asc`.
+</ParamField>
+
+<ParamField query="limit" type="number">
+  Maximum number of observations to return.
+</ParamField>
+
+<ParamField query="project" type="string">
+  Filter results to a specific project name.
+</ParamField>
+
+**Returns:** Complete observation objects with narrative, facts, files read, files modified, and concepts.
+
+**Example**
+
+```text
+get_observations(ids=[123, 456, 789, 1011])
+```
+
+<Warning>
+  Always batch IDs into a single `get_observations` call. Making separate calls per ID wastes tokens and adds latency.
+</Warning>
+
+## Common use cases
+
+<AccordionGroup>
+  <Accordion title="Debugging issues" icon="bug">
+    Find what went wrong and how it was fixed.
+
+    ```text
+    # Step 1: survey bug fixes related to database connections
+    search(query="error database connection", type="bugfix", limit=10)
+    # → identify observations #245, #312, #489
+
+    # Step 2: understand what was happening around the main fix
+    timeline(anchor=312, depth_before=3, depth_after=3)
+
+    # Step 3: fetch full details for the two most relevant fixes
+    get_observations(ids=[312, 489])
+    ```
+  </Accordion>
+
+  <Accordion title="Understanding decisions" icon="scale-balanced">
+    Review architectural choices and their rationale.
+
+    ```text
+    # Step 1: find decision observations about authentication
+    search(query="authentication", type="decision", limit=5)
+
+    # Step 2: fetch full decision records with rationale and trade-offs
+    get_observations(ids=[<relevant_ids>])
+    ```
+  </Accordion>
+
+  <Accordion title="Code archaeology" icon="magnifying-glass-chart">
+    Find when and why a specific file was changed.
+
+    ```text
+    # Step 1: all observations mentioning a file
+    search(query="worker-service.ts", limit=20)
+
+    # Step 2: see what led to and followed from the refactor
+    timeline(query="worker-service.ts refactor", depth_before=2, depth_after=2)
+
+    # Step 3: get implementation details
+    get_observations(ids=[<specific_observation_ids>])
+    ```
+  </Accordion>
+
+  <Accordion title="Feature history" icon="timeline">
+    Track how a feature evolved from first commit to completion.
+
+    ```text
+    # Step 1: chronological view of all feature work
+    search(query="dark mode", type="feature", orderBy="date_asc")
+
+    # Step 2: see the full development arc from the first observation
+    timeline(anchor=<first_observation_id>, depth_after=10)
+
+    # Step 3: deep dive on critical implementation milestones
+    get_observations(ids=[<key_milestones>])
+    ```
+  </Accordion>
+
+  <Accordion title="Context recovery" icon="rotate-left">
+    Restore context after time away from a project.
+
+    ```text
+    # Step 1: see recent work
+    search(query="project-name", limit=10, orderBy="date_desc")
+
+    # Step 2: understand what led to the current state
+    timeline(anchor=<most_recent_id>, depth_before=10)
+
+    # Step 3: refresh memory on key decisions
+    get_observations(ids=[<critical_observations>])
+    ```
+  </Accordion>
+
+  <Accordion title="Reviewing refactoring patterns" icon="code-branch">
+    Study past refactoring approaches before starting a new one.
+
+    ```text
+    # Step 1: recent refactoring work
+    search(type="refactor", limit=10, orderBy="date_desc")
+
+    # Step 2: study the patterns and approaches used
+    get_observations(ids=[<interesting_ids>])
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## FTS5 query syntax
+
+The `query` parameter uses SQLite FTS5 full-text search syntax.
+
+### Boolean operators
+
+```text
+query="authentication AND JWT"        # Both terms must appear
+query="OAuth OR JWT"                   # Either term can appear
+query="security NOT deprecated"        # Exclude items with "deprecated"
+```
+
+### Phrase searches
+
+```text
+query='"database migration"'          # Exact phrase match
+```
+
+### Column-specific searches
+
+```text
+query="title:authentication"          # Search in title only
+query="content:database"               # Search in content only
+query="concepts:security"              # Search in concepts only
+```
+
+### Combining operators
+
+```text
+query='"user auth" AND (JWT OR session) NOT deprecated'
+```
+
+## Token efficiency guide
+
+### Cost estimates
+
+| Operation | Tokens per result |
+|-----------|-------------------|
+| `search` index | 50–100 |
+| `timeline` per observation | 100–200 |
+| `get_observations` full details | 500–1,000 |
+
+### Best practices
+
+1. **Always start with `search`** — survey the index before fetching anything
+2. **Use small limits first** — start with 3–5 results, increase only if needed
+3. **Filter before fetching** — use `type`, `dateStart`/`dateEnd`, and `project` to narrow results
+4. **Batch `get_observations`** — always group multiple IDs in a single call
+5. **Use `timeline` strategically** — only when understanding narrative context matters
+
+### Efficient vs. inefficient patterns
+
+<CodeGroup>
+
+```text efficient.txt
+# Search index: ~1,000 tokens
+search(query="bug fix", limit=20)
+
+# Review IDs, identify 3 relevant observations
+
+# Fetch only what's relevant: ~1,500–3,000 tokens
+get_observations(ids=[5, 12, 18])
+
+# Total: ~2,500–4,000 tokens
+```
+
+```text inefficient.txt
+# Fetching 20 full observations upfront
+# without knowing which are relevant:
+# 10,000–20,000 tokens
+get_observations(ids=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+```
+
+</CodeGroup>
+
+## Advanced filtering
+
+### Date ranges
+
+```text
+search(
+  query="performance optimization",
+  dateStart="2025-10-01",
+  dateEnd="2025-10-31"
+)
+```
+
+### Multiple observation types
+
+Make separate searches for each type, then compare results:
+
+```text
+search(query="database", type="bugfix", limit=10)
+search(query="database", type="feature", limit=10)
+```
+
+### Project-specific search
+
+```text
+search(query="API", project="my-app", limit=15)
+```
+
+### Pagination
+
+```text
+search(query="refactor", limit=10, offset=0)   # page 1
+search(query="refactor", limit=10, offset=10)  # page 2
+search(query="refactor", limit=10, offset=20)  # page 3
+```
+
+## Result metadata
+
+Every observation returned by `get_observations` includes:
+
+| Field | Description |
+|-------|-------------|
+| **ID** | Unique observation identifier |
+| **Type** | `bugfix`, `feature`, `decision`, `discovery`, `refactor`, or `change` |
+| **Date** | When the work occurred |
+| **Title** | Concise description |
+| **Concepts** | Tagged themes such as `security`, `performance`, `architecture` |
+| **Files read** | Files examined during the work |
+| **Files modified** | Files changed during the work |
+| **Narrative** | Story of what happened and why |
+| **Facts** | Key factual points: decisions made, patterns used, metrics |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No results found">
+    **Broaden your query:**
+
+    ```text
+    # Too specific
+    search(query="JWT authentication implementation with RS256")
+
+    # Better
+    search(query="authentication")
+    ```
+
+    **Check the database has data:**
+
+    ```bash
+    curl "http://localhost:37777/api/search?query=test"
+    ```
+
+    **Try without filters:**
+
+    ```text
+    search(query="your-search-term")
+    ```
+  </Accordion>
+
+  <Accordion title="IDs not found in get_observations">
+    **Error:** `Observation IDs not found: [123, 456]`
+
+    Possible causes: the IDs belong to a different project, they were deleted, or there is a typo.
+
+    ```text
+    # Verify the IDs exist in this project
+    search(query="<related-search>")
+
+    # Use the correct project filter
+    get_observations(ids=[123, 456], project="correct-project-name")
+    ```
+  </Accordion>
+
+  <Accordion title="Token limit errors">
+    **Error:** Response exceeds token limits
+
+    Switch to the 3-layer workflow instead of fetching large batches upfront:
+
+    ```text
+    # Instead of this (25,000–50,000 tokens):
+    # get_observations(ids=[1,2,3,...,50])
+
+    # Do this:
+    search(query="<your-query>", limit=50)  # ~2,500–5,000 tokens
+    # Review, identify 5 relevant observations
+    get_observations(ids=[<5-most-relevant>])  # ~2,500–5,000 tokens
+    # Total: 5,000–10,000 tokens (50–80% savings)
+    ```
+  </Accordion>
+
+  <Accordion title="Slow search performance">
+    1. Use more specific queries — better precision helps the FTS5 index
+    2. Add date range filters to narrow the scope
+    3. Specify a `project` filter when possible
+    4. Use smaller `limit` values
+  </Accordion>
+</AccordionGroup>
+
+## Technical details
+
+The MCP tools are a thin wrapper over the worker HTTP API on `localhost:37777`. The MCP server translates tool calls into HTTP requests; all business logic, database queries, and Chroma vector search run in the worker service.
+
+| Component | Location |
+|-----------|----------|
+| MCP server | `~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs` |
+| Worker service | Express API on port 37777, managed by Bun |
+| Database | SQLite FTS5 at `~/.claude-mem/claude-mem.db` |
+| Vector search | Chroma embeddings for semantic search |
+
+<CardGroup cols={2}>
+  <Card title="Progressive disclosure" icon="layer-group" href="/progressive-disclosure">
+    The philosophy behind the 3-layer workflow
+  </Card>
+  <Card title="Claude Desktop" icon="desktop" href="/usage/claude-desktop">
+    Using memory search from Claude Desktop
+  </Card>
+  <Card title="Architecture overview" icon="diagram-project" href="/architecture/overview">
+    System components and data flow
+  </Card>
+  <Card title="Database schema" icon="database" href="/architecture/database">
+    Understanding the observation data structure
+  </Card>
+</CardGroup>

@@ -1,0 +1,136 @@
+{
+  "projectType": "framework",
+  "projectName": "Claude Mem",
+  "projectDescription": "A Claude Code plugin that automatically captures, compresses, and injects persistent memory across sessions using lifecycle hooks, an AI-powered worker service, and hybrid semantic search.",
+  "theme": "luma",
+  "primaryColor": "#f96505",
+  "lightColor": "#b14f15",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "usage/getting-started",
+              "beta-features"
+            ]
+          },
+          {
+            "group": "Using Claude Mem",
+            "pages": [
+              "usage/search-tools",
+              "usage/private-tags",
+              "usage/folder-context",
+              "usage/export-import",
+              "usage/claude-desktop",
+              "modes"
+            ]
+          },
+          {
+            "group": "AI Providers",
+            "pages": [
+              "usage/gemini-provider",
+              "usage/openrouter-provider"
+            ]
+          },
+          {
+            "group": "Best Practices",
+            "pages": [
+              "context-engineering",
+              "progressive-disclosure"
+            ]
+          },
+          {
+            "group": "Configuration & Development",
+            "pages": [
+              "configuration",
+              "development",
+              "troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "groups": [
+          {
+            "group": "Platform Integrations",
+            "pages": [
+              "openclaw-integration",
+              "platform-integration",
+              "cursor/index"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "System Design",
+            "pages": [
+              "architecture/overview",
+              "architecture/worker-service",
+              "architecture/database",
+              "architecture/search-architecture"
+            ]
+          },
+          {
+            "group": "Hooks & Lifecycle",
+            "pages": [
+              "hooks-architecture",
+              "architecture/hooks"
+            ]
+          },
+          {
+            "group": "Evolution",
+            "pages": [
+              "architecture-evolution",
+              "architecture/pm2-to-bun-migration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automatic session lifecycle hooks (SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd)",
+    "AI-powered observation compression via Claude Agent SDK",
+    "Hybrid semantic + full-text search with ChromaDB and SQLite FTS5",
+    "3-layer progressive disclosure MCP search tools (search → timeline → get_observations)",
+    "Web Viewer UI at localhost:37777 with real-time memory stream",
+    "Privacy control via <private> tags",
+    "Multi-provider AI support (Claude, Gemini, OpenRouter)",
+    "Mode system with 28+ language support",
+    "Auto-generated folder CLAUDE.md context files",
+    "OpenClaw gateway integration with real-time observation feeds",
+    "Beta channel with Endless Mode for extended sessions",
+    "Version channel switching from the web viewer UI"
+  ],
+  "publicApiSurface": [
+    "GET /api/search/observations — Full-text search across observations",
+    "GET /api/search/sessions — Search session history",
+    "GET /api/search/prompts — Search user prompts",
+    "POST /api/sessions/init — Initialize a new session",
+    "POST /api/sessions/observations — Record a tool observation",
+    "POST /api/sessions/summarize — Generate session summary",
+    "POST /api/sessions/complete — Mark session complete",
+    "GET /api/context/inject — Retrieve context for system prompt injection",
+    "GET /stream — SSE stream of new observations",
+    "MCP tool: search(query, type, limit, project, dateStart, dateEnd)",
+    "MCP tool: timeline(anchor, query, depth_before, depth_after)",
+    "MCP tool: get_observations(ids, orderBy, limit, project)",
+    "npm export: ./sdk — Claude-mem SDK/library",
+    "npm export: ./modes/* — Mode configuration profiles",
+    "plugin hook: context-hook.js (SessionStart)",
+    "plugin hook: new-hook.js (UserPromptSubmit)",
+    "plugin hook: save-hook.js (PostToolUse)",
+    "plugin hook: summary-hook.js (Stop)",
+    "plugin hook: cleanup-hook.js (SessionEnd)"
+  ]
+}

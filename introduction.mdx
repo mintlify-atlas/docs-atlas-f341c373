@@ -1,0 +1,146 @@
+---
+title: "Introduction"
+description: "Persistent memory compression system for Claude Code — context that survives across sessions"
+---
+
+# Claude-Mem
+
+Claude-Mem is a persistent memory compression system built for [Claude Code](https://claude.com/claude-code). It seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about your projects even after sessions end or reconnect.
+
+<Info>
+Claude-Mem operates entirely automatically. Once installed, no manual intervention is required — every session start, tool execution, and session end is handled by the plugin's lifecycle hooks.
+</Info>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Persistent Memory" icon="brain">
+    Context survives across sessions. Observations from tool use, file reads, edits, and commands are stored in SQLite and re-injected into every new session.
+  </Card>
+  <Card title="Folder Context Files" icon="folder-open">
+    Auto-generated `CLAUDE.md` files appear in your project folders with activity timelines, giving Claude immediate project awareness on session start.
+  </Card>
+  <Card title="MCP Search Tools" icon="magnifying-glass">
+    Query your full project history with natural language. Claude auto-invokes MCP tools following a 3-layer workflow for token-efficient recall.
+  </Card>
+  <Card title="Web Viewer UI" icon="globe">
+    A real-time memory stream visualization runs at `http://localhost:37777` with infinite scroll, SSE updates, and version channel switching.
+  </Card>
+  <Card title="Privacy Control" icon="lock">
+    Wrap any content in `<private>...</private>` tags to exclude it from storage entirely. Stripping happens at the hook layer before data reaches the database.
+  </Card>
+  <Card title="Multilingual Modes" icon="language">
+    Supports 28 languages including Spanish, Chinese, French, Japanese, Portuguese, Korean, German, and more.
+  </Card>
+  <Card title="FTS5 Full-Text Search" icon="database">
+    Fast full-text search across all captured observations using SQLite's FTS5 engine. Reference past observations directly by ID.
+  </Card>
+  <Card title="Context Configuration" icon="sliders">
+    11 settings for fine-grained control over what context gets injected, how many observations appear, and how summaries are displayed.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+Claude-Mem hooks into five Claude Code lifecycle events to build a complete picture of every session:
+
+<Steps>
+  <Step title="Session Start — Context Injection">
+    The `SessionStart` hook queries the database for observations and summaries from the last 10 sessions in your project. Formatted context is injected into Claude's initial context window, so Claude immediately knows what was done before.
+  </Step>
+  <Step title="User Prompts — Session Tracking">
+    The `UserPromptSubmit` hook creates or continues a session record and saves the user's prompt for later summarization.
+  </Step>
+  <Step title="Tool Executions — Observation Capture">
+    The `PostToolUse` hook fires after every tool call (Read, Write, Edit, Bash, Glob, Grep, and all others). Raw tool output is sent to the worker service for processing.
+  </Step>
+  <Step title="Worker Processing — Semantic Extraction">
+    A background worker service (managed by Bun on port 37777) uses the Claude Agent SDK to extract structured learnings from each observation: title, narrative, facts, concepts, file references, and a classification type.
+  </Step>
+  <Step title="Session End — Summary Generation">
+    The `Stop` hook fires when Claude finishes responding. A session summary is automatically generated covering: what was requested, what was investigated, what was learned, what was completed, and suggested next steps.
+  </Step>
+</Steps>
+
+```
+Session Start  →  Inject context from last 10 sessions
+      ↓
+User Prompts   →  Create session, save user prompts
+      ↓
+Tool Executions →  Capture observations (Read, Write, Bash, etc.)
+      ↓
+Worker Processes →  Extract learnings via Claude Agent SDK
+      ↓
+Session Ends   →  Generate summary, ready for next session
+```
+
+## Core Components
+
+<Accordion title="4 Lifecycle Hooks">
+  Claude-Mem registers hooks for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`. Each hook is a compiled TypeScript ESM script built to `plugin/scripts/`. The hooks coordinate with the worker service via HTTP on `localhost:37777`.
+</Accordion>
+
+<Accordion title="Worker Service">
+  An Express HTTP API managed by Bun that runs on port 37777. It handles all AI processing asynchronously so hooks return quickly without blocking Claude. It also serves the Web Viewer UI and all search endpoints.
+</Accordion>
+
+<Accordion title="SQLite Database">
+  Persistent storage at `~/.claude-mem/claude-mem.db` using Bun's native `bun:sqlite` driver. Stores sessions, observations, and summaries with FTS5 full-text search indexing across all content.
+</Accordion>
+
+<Accordion title="MCP Search Tools">
+  Three MCP tools (`search`, `timeline`, `get_observations`) that Claude can invoke to query project history. Follow a 3-layer workflow for ~10x token savings: search for an index, check timeline context, then fetch full details only for relevant IDs.
+</Accordion>
+
+<Accordion title="Web Viewer UI">
+  A React interface at `http://localhost:37777` with real-time SSE updates, infinite scroll, observation details, session history, and version channel management (stable ↔ beta).
+</Accordion>
+
+## System Requirements
+
+| Requirement | Version |
+|---|---|
+| Node.js | 18.0.0 or higher |
+| Claude Code | Latest version with plugin support |
+| Bun | Auto-installed if missing |
+| uv | Auto-installed if missing (provides Python for Chroma) |
+| SQLite 3 | Bundled |
+
+## What's New
+
+<Accordion title="v9.0.0 — Live Context">
+  - **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
+  - **Worktree Support**: Unified context from parent repos and git worktrees
+  - **Configurable Observation Limits**: Control how many observations appear in context
+  - **Windows Fixes**: Resolved IPC detection and hook execution issues
+  - **Settings Auto-Creation**: `settings.json` now auto-creates on first run
+  - **MCP Tools Naming**: Updated terminology from "mem-search skill" to "MCP tools"
+</Accordion>
+
+<Accordion title="v7.1.0 — Bun Migration">
+  - Replaced PM2 with native Bun process management
+  - Switched from `better-sqlite3` to `bun:sqlite` for faster database access
+  - Simplified cross-platform support across Windows, macOS, and Linux
+</Accordion>
+
+<Accordion title="v7.0.0 — Context Configuration">
+  - 11 settings for fine-grained control over context injection
+  - Dual-tag privacy system with `<private>` tags processed at the hook layer
+</Accordion>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Two-command plugin install, system requirements, advanced source install, and post-install verification steps.
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
+    Learn how Claude-Mem works automatically: what gets captured, how context injection works, and how to search your history.
+  </Card>
+  <Card title="Beta Features" icon="flask" href="/beta-features">
+    Try Endless Mode — an experimental biomimetic memory architecture that extends sessions beyond the standard context window limit.
+  </Card>
+  <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Query your full project history with natural language using the 3-layer MCP search workflow.
+  </Card>
+</CardGroup>
